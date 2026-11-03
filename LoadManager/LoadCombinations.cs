@@ -63,7 +63,8 @@ namespace LoadManager
         /// <summary>
         /// The 2024 IBC alternative allowable stress design combinations (1605.2, Eq. 16-1 to 16-6), each with the variable
         /// loads set to zero in turn (every subset of them), without repeats: "D", "D + L", "D + Lr", "D + L + Lr", ...
-        /// A subset leaving 0.9D alone (16-6 without E) is not a combination. Gravity-against-wind uplift (two-thirds of
+        /// A subset leaving 0.9D alone (16-6 without E) is not a combination, nor one another covers term by term with the
+        /// same loads and dead factor (it cannot govern: same durations, smaller loads). Gravity-against-wind uplift (two-thirds of
         /// the dead load) is the caller's (<see cref="IbcAlternativeAsdSource"/>).
         /// </summary>
         public static List<LoadCombination> IbcAlternativeAsd()
@@ -97,7 +98,13 @@ namespace LoadManager
                     if (seen.Add(key)) list.Add(c);
                 }
             }
-            return list;
+            // drop one another covers: the same loads and the same dead factor, every variable load no larger
+            // ("D + 0.6W/2" under "D + 0.6W", "D + 0.7S/2" under "D + 0.7S"); a reduced dead (0.9D) is never covered
+            bool Covers(LoadCombination big, LoadCombination small) =>
+                !ReferenceEquals(big, small) && big.Types.OrderBy(t => t).SequenceEqual(small.Types.OrderBy(t => t)) &&
+                big.Factor(LoadType.Dead) == small.Factor(LoadType.Dead) &&
+                small.Types.All(t => small.Factor(t) <= big.Factor(t));
+            return list.Where(c => !list.Any(o => Covers(o, c))).ToList();
         }
     }
 }

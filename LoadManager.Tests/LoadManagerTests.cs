@@ -19,10 +19,10 @@ namespace LoadManager.Tests
                 "D", "D + L", "D + Lr", "D + L + Lr", "D + 0.7S", "D + L + 0.7S", "D + R", "D + L + R",
                 // 16-2
                 "D + 0.6W", "D + L + 0.6W",
-                // 16-3
-                "D + 0.7S/2", "D + L + 0.7S/2","D + 0.6W + 0.7S/2", "D + L + 0.6W + 0.7S/2",
-                // 16-4
-                "D + 0.6W/2", "D + L + 0.6W/2", "D + 0.7S + 0.6W/2", "D + L + 0.7S + 0.6W/2",
+                // 16-3 (with S zeroed it is 16-2; W zeroed, 0.7S/2 is under 16-1's 0.7S)
+                "D + 0.6W + 0.7S/2", "D + L + 0.6W + 0.7S/2",
+                // 16-4 (S zeroed: 0.6W/2 is under 16-2's 0.6W)
+                "D + 0.7S + 0.6W/2", "D + L + 0.7S + 0.6W/2",
                 // 16-5
                 "D + E/1.4", "D + L + E/1.4", "D + 0.7S + E/1.4", "D + L + 0.7S + E/1.4",
                 // 16-6
@@ -37,6 +37,7 @@ namespace LoadManager.Tests
             var keys = all.Select(c => string.Join("|", c.Terms.Select(t => $"{t.Type}:{t.Factor}"))).ToList();
             Assert.AreEqual(keys.Count, keys.Distinct().Count());
             Assert.IsFalse(all.Any(c => c.Name == "0.9D"));
+            Assert.IsFalse(all.Any(c => c.Name == "D + 0.6W/2" || c.Name == "D + 0.7S/2"));   // covered: cannot govern
             Assert.AreEqual(1, all.Count(c => c.Name == "D"));
         }
 
