@@ -156,6 +156,15 @@ namespace LoadManager
             return true;
         }
 
+        /// <summary>Sets every level's area loads and the walls' own dead load at once (one edit). False when nothing changed.</summary>
+        public static bool SetAreaLoads(Building b, IDictionary<string, AreaLoad> levels, double wallDead)
+        {
+            bool changed = false;
+            foreach (var kv in levels ?? new Dictionary<string, AreaLoad>()) changed |= SetLevel(b, kv.Key, kv.Value);
+            changed |= SetWallDead(b, wallDead);
+            return changed;
+        }
+
         /// <summary>Sets the walls' own dead load (psf of wall). False when nothing changed.</summary>
         public static bool SetWallDead(Building b, double psf)
         {

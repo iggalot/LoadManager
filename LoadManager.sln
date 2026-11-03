@@ -9,6 +9,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LoadManager.Tests", "LoadMa
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "BuildingModel.Core", "..\BuildingModel\BuildingModel.Core\BuildingModel.Core.csproj", "{3E6B1F40-8C2D-4B7A-A915-6D0F2C4B8E13}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "LoadManager.Wpf", "LoadManager.Wpf\LoadManager.Wpf.csproj", "{7C1D2E30-4A5B-4C6D-8E9F-0A1B2C3D4E53}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,10 @@ Global
 		{3E6B1F40-8C2D-4B7A-A915-6D0F2C4B8E13}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{3E6B1F40-8C2D-4B7A-A915-6D0F2C4B8E13}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{3E6B1F40-8C2D-4B7A-A915-6D0F2C4B8E13}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C1D2E30-4A5B-4C6D-8E9F-0A1B2C3D4E53}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C1D2E30-4A5B-4C6D-8E9F-0A1B2C3D4E53}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C1D2E30-4A5B-4C6D-8E9F-0A1B2C3D4E53}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C1D2E30-4A5B-4C6D-8E9F-0A1B2C3D4E53}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
