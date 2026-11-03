@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The project's loads (not the building's geometry): the gravity loads (dead, live, roof live, snow, rain) and the load
+       combinations every design app uses. Kept in its own "Loads" section of the project file, like the wind app's
+       "Wind" section; the building model only carries the section. No UI. -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>LoadManager</RootNamespace>
+    <AssemblyName>LoadManager</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- only for the project file's data section (Building.GetData / SetData) and the object IDs the loads are on -->
+    <ProjectReference Include="..\..\BuildingModel\BuildingModel.Core\BuildingModel.Core.csproj" />
+    <Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+
+</Project>
