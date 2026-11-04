@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Load Manager app: edits the gravity loads ("Loads" in the project's .bldg.json) on the building model's plan, and shows
+    where they go: the load path, the wind uplift, and the foundation with every combination and the envelope (plan, diagram, 3D).
+    It never changes the building itself (the Building Model app does). Named LoadManagerApp: LoadManager.dll is the engine.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>LoadManager.App</RootNamespace>
+    <AssemblyName>LoadManagerApp</AssemblyName>
+    <StartupObject>LoadManager.App.Program</StartupObject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LoadManager\LoadManager.csproj" />
+    <ProjectReference Include="..\LoadManager.Wpf\LoadManager.Wpf.csproj" />
+    <ProjectReference Include="..\..\BuildingModel\BuildingModel.Core\BuildingModel.Core.csproj" />
+    <ProjectReference Include="..\..\BuildingModel\BuildingModel.Sketch\BuildingModel.Sketch.csproj" />
+    <ProjectReference Include="..\..\ASCE7-Wind-Load-Calculator\ASCE7Wind.Core\ASCE7Wind.Core.csproj" />
+    <ProjectReference Include="..\..\ASCE7-Wind-Load-Calculator\ASCE7Wind.ModelAdapter\ASCE7Wind.ModelAdapter.csproj" />
+  </ItemGroup>
+
+</Project>
