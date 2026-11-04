@@ -331,6 +331,38 @@ namespace LoadManager.Tests
             Assert.AreEqual(1500, p.Load.Dead, Tol);
         }
 
+        /// <summary>
+        /// The roof framing spans W-E onto the upper W and E walls and a roof beam at x = 15 (S-N, on the upper S and N walls):
+        /// the beam takes 15 ft, D 10 → 150 plf over 20 ft, 1500 lb each end. Under the upper S wall are two walls meeting at
+        /// x = 15: the 1500 lb goes to one of them, not both.
+        /// </summary>
+        [TestMethod]
+        public void ConcentratedLoad_AtAJointBelow_GoesToOneWall()
+        {
+            var b = Building.New("Joint");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            var d = b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            BuildingModel.Edits.BuildingEdits.SetDiaphragmSpan(b, d.Id, SpanDirection.WestEast);
+            var sa = b.AddWall(b.Ground, l2, 0, 0, 15, 0);
+            var sb = b.AddWall(b.Ground, l2, 15, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            b.AddWall(l2, rf, 0, 0, 0, 20);
+            b.AddWall(l2, rf, 30, 0, 30, 20);
+            var bm = b.AddBeam(rf, 15, 0, 15, 20);
+            LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.AreEqual(1500, r.Beams[bm.Id].StartReaction.Dead, Tol);
+            var below = r[GravityLoadPath.Key(sa.Id, l2.Id)].Points.Concat(r[GravityLoadPath.Key(sb.Id, l2.Id)].Points).ToList();
+            Assert.AreEqual(1, below.Count);
+            Assert.AreEqual(1500, below[0].Load.Dead, Tol);
+            Assert.IsTrue(below[0].From.StartsWith(bm.Id + " via "));
+        }
+
         [TestMethod]
         public void Effective_HandEnteredWins()
         {

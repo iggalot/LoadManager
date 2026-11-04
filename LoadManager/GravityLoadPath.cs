@@ -201,6 +201,23 @@ namespace LoadManager
                     else if (!cl.Load.IsEmpty) landings.Add(new Landing { Target = cl.BaseOn, Where = c.At, Load = cl.Load, From = c.Id });
                 }
 
+                // (a2) the concentrated loads in the walls standing on this level go down to one support each: the nearest wall or
+                // beam under that wall on its line, else whatever is under the point (a cross wall, a column, a beam)
+                foreach (var a in b.Walls.Where(a => a.BaseLevelId == lv.Id))
+                {
+                    var aUp = b.LevelsAlong(a).FirstOrDefault();
+                    if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
+                    var onLine = lines.Where(l => { var o = OverlapAlong(l, a.Start, a.End, a.Direction); return o.b - o.a > Tol; }).ToList();
+                    foreach (var p in ar.Points)
+                    {
+                        var to = onLine.Where(l => DistanceToSegment(p.Where, l.Start, l.End) <= Bearing)
+                                       .OrderBy(l => DistanceToSegment(p.Where, l.Start, l.End)).ThenBy(l => l.IsBeam).ThenBy(l => l.Id).FirstOrDefault()?.Id
+                                 ?? SupportOf(p.Where, null, null);
+                        if (to == null) result.Notes.Add($"{p.From} on {a.Id} at ({p.Where.X:0.##}, {p.Where.Y:0.##}): nothing drawn under it at {lv.Name}, not traced down.");
+                        else landings.Add(new Landing { Target = to, Where = p.Where, Load = p.Load, From = Via(p.From, a.Id) });
+                    }
+                }
+
                 // (b) the beams, those framing into a girder before the girder
                 var ends = beams.ToDictionary(m => m.Id, m => (start: SupportOf(m.Start, m.Id, null), end: SupportOf(m.End, m.Id, null)));
                 var order = new List<Beam>();
@@ -229,7 +246,7 @@ namespace LoadManager
                         r.FromLevel = area.Times(hi);
                         if (edge > Bearing) r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge ({edge:0.##} ft) is all on this beam.");
                     }
-                    // walls standing on it, with the concentrated loads they bring down
+                    // walls standing on it (their concentrated loads came as landings, above)
                     foreach (var a in b.Walls.Where(a => a.BaseLevelId == lv.Id))
                     {
                         var (o0, o1) = OverlapAlong(me, a.Start, a.End, a.Direction);
@@ -237,8 +254,6 @@ namespace LoadManager
                         var aUp = b.LevelsAlong(a).FirstOrDefault();
                         if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
                         r.Partials.Add(new PartialLoad { From = a.Id, A = o0, B = o1, Load = ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) } });
-                        foreach (var p in ar.Points.Where(p => DistanceToSegment(p.Where, me.Start, me.End) <= Bearing))
-                            r.Points.Add(new ConcentratedLoad { Where = p.Where, At = Along(me, p.Where), Load = p.Load, From = Via(p.From, a.Id) });
                     }
                     foreach (var g in landings.Where(g => g.Target == m.Id))
                         r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From });
@@ -282,8 +297,6 @@ namespace LoadManager
                             if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
                             r.FromAbove = LineLoad.Max(r.FromAbove, ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) });
                             r.Above.Add(a.Id);
-                            foreach (var p in ar.Points.Where(p => DistanceToSegment(p.Where, w.Start, w.End) <= Bearing))
-                                r.Points.Add(new ConcentratedLoad { Where = p.Where, Load = p.Load, From = Via(p.From, a.Id) });
                         }
                     }
                     foreach (var g in landings.Where(g => g.Target == w.Id))
