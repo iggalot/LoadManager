@@ -32,6 +32,10 @@ namespace LoadManager
         public LineLoad FromLevel { get; set; } = new LineLoad();
         /// <summary>What the wall or walls standing on it bring down, with their own weight (plf, the most along it).</summary>
         public LineLoad FromAbove { get; set; } = new LineLoad();
+        /// <summary>How <see cref="FromLevel"/>, <see cref="FromAbove"/> and <see cref="Load"/> vary along the wall (from its start), for the foundation.</summary>
+        public LoadProfile FromLevelProfile { get; set; } = new LoadProfile();
+        public LoadProfile FromAboveProfile { get; set; } = new LoadProfile();
+        public LoadProfile Profile { get; set; } = new LoadProfile();
         /// <summary>What the load path finds: <see cref="FromLevel"/> + <see cref="FromAbove"/>.</summary>
         public LineLoad Computed { get; set; } = new LineLoad();
         /// <summary>True when <see cref="Load"/> is the one entered by hand (it replaces <see cref="Computed"/>, and goes on down from there).</summary>
@@ -106,6 +110,8 @@ namespace LoadManager
         public double Length { get; set; }
         /// <summary>A wall's line load at its base (plf, the most along it): its top load and its bottom story's own weight.</summary>
         public LineLoad Line { get; set; } = new LineLoad();
+        /// <summary>How a wall's line load at its base varies along it (from its start): <see cref="Line"/> is its largest.</summary>
+        public LoadProfile Profile { get; set; } = new LoadProfile();
         /// <summary>The posts in a wall, each down to the foundation.</summary>
         public List<ConcentratedLoad> Points { get; set; } = new List<ConcentratedLoad>();
         /// <summary>A column's load (lb).</summary>
@@ -297,7 +303,7 @@ namespace LoadManager
                     if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
                     else
                     {
-                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most);
+                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out _);
                         r.TributaryMax = hi; r.TributaryMin = lo; r.FramingSpan = span;
                         r.FromLevel = load;
                         r.Zones.AddRange(met);
@@ -328,7 +334,10 @@ namespace LoadManager
                 {
                     var me = lines.First(l => !l.IsBeam && l.Id == w.Id);
                     var r = new WallTopLoad { WallId = w.Id, LevelId = lv.Id };
-                    var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most);
+                    var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out var levelProfile);
+                    double len = me.Length;
+                    r.FromLevelProfile = levelProfile;
+                    var aboveProfile = new LoadProfile();
                     r.TributaryMax = hi;
                     r.FramingSpan = span;
                     r.TributaryMin = lo;
@@ -344,6 +353,7 @@ namespace LoadManager
                         if (result.TryGetValue(Key(w.Id, up.Id), out var cont))
                         {
                             r.FromAbove = cont.Load + new LineLoad { Dead = s.WallDead * (up.Elevation - lv.Elevation) };
+                            aboveProfile = cont.Profile.Plus(LoadProfile.Uniform(0, len, new LineLoad { Dead = s.WallDead * (up.Elevation - lv.Elevation) }));
                             r.Points.AddRange(cont.Points.Select(p => new ConcentratedLoad { Where = p.Where, Load = p.Load, From = p.From }));
                         }
                         r.Above.Add(w.Id + " (its story above)");
@@ -355,6 +365,13 @@ namespace LoadManager
                             var aUp = b.LevelsAlong(a).FirstOrDefault();
                             if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
                             r.FromAbove = Most(r.Above.Count == 0 ? null : r.FromAbove, ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) });
+                            // its profile, onto this wall where they overlap, with its own weight there
+                            var (o0, o1) = OverlapAlong(me, a.Start, a.End, a.Direction);
+                            double la = Dist(a.Start, a.End);
+                            var wa = a;
+                            var part = ar.Profile.Moved(x => Along(me, la < 1e-9 ? wa.Start : new Point2(wa.Start.X + (wa.End.X - wa.Start.X) * x / la, wa.Start.Y + (wa.End.Y - wa.Start.Y) * x / la)), o0, o1)
+                                         .Plus(LoadProfile.Uniform(o0, o1, new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) }));
+                            aboveProfile = aboveProfile.Combine(part, Most);
                             r.Above.Add(a.Id);
                         }
                     }
@@ -366,6 +383,8 @@ namespace LoadManager
                     var entered = s.WallTop(w.Id, lv.Id);
                     r.Entered = entered != null;
                     r.Load = entered != null ? entered + new LineLoad { Wind = r.Computed.Wind } : r.Computed;
+                    r.FromAboveProfile = aboveProfile;
+                    r.Profile = entered != null ? LoadProfile.Uniform(0, len, r.Load) : levelProfile.Plus(aboveProfile);
                     result[Key(w.Id, lv.Id)] = r;
                 }
 
@@ -397,6 +416,7 @@ namespace LoadManager
                     Id = w.Id, IsWall = true, Length = Dist(w.Start, w.End), Where = w.Start,
                     Line = (top?.Load ?? new LineLoad()) + new LineLoad { Dead = s.WallDead * first.Elevation },
                     Points = top?.Points.ToList() ?? new List<ConcentratedLoad>(),
+                    Profile = (top?.Profile ?? new LoadProfile()).Plus(LoadProfile.Uniform(0, Dist(w.Start, w.End), new LineLoad { Dead = s.WallDead * first.Elevation })),
                 });
             }
             foreach (var c in b.Columns.Where(c => Elev(c.BaseLevelId) <= Tol))
@@ -466,17 +486,19 @@ namespace LoadManager
         /// load (each kind, along the line: the area loads across the tributary strip, a zone's in its part) and the zones met.
         /// </summary>
         private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) TributaryAll(Line me, List<Plate> plates, List<Line> lines, AreaLoad area, List<LoadZone> zones,
-            Func<LineLoad, LineLoad, LineLoad> pick)
+            Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
         {
+            profile = new LoadProfile();
             double tMin = double.MaxValue, tMax = 0, edgeMax = 0, spanMax = 0;
             LineLoad most = null;
             var met = new List<string>();
             foreach (var p in plates)
             {
-                var (lo, hi, edge, load, z, span) = Tributary(me, p, lines, area, zones, pick);
+                var (lo, hi, edge, load, z, span) = Tributary(me, p, lines, area, zones, pick, out var one);
                 if (hi <= 0) continue;
                 tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang); spanMax = Math.Max(spanMax, span);
                 most = pick(most, load);
+                profile = profile.Combine(one, pick);
                 met.AddRange(z.Where(x => !met.Contains(x)));
             }
             return (tMax > 0 ? tMin : 0, tMax, edgeMax, most ?? new LineLoad(), met, spanMax);
@@ -516,8 +538,10 @@ namespace LoadManager
         /// an edge with no support (0, 0 when the framing runs along the line or the plate does not reach it).
         /// </summary>
         private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all, AreaLoad area, List<LoadZone> zones,
-            Func<LineLoad, LineLoad, LineLoad> pick)
+            Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
         {
+            profile = new LoadProfile();
+            var steps = new List<ProfileStep>();
             LineLoad most = null;
             var met = new List<string>();
             // joists running W-E bear on S-N lines, and the other way round
@@ -566,7 +590,10 @@ namespace LoadManager
                 var strip = Strip(alongX, s, f, g, area, zones, met);
                 if (p.Wind != null) strip.Wind += WindAcross(p.Wind, alongX, s, f, g);
                 most = pick(most, strip);
+                double st = alongX ? w.Start.Y : w.Start.X, half = (s1 - s0) / n / 2;
+                steps.Add(new ProfileStep { A = Math.Min(Math.Abs(s - half - st), Math.Abs(s + half - st)), B = Math.Max(Math.Abs(s - half - st), Math.Abs(s + half - st)), Load = strip });
             }
+            profile = LoadProfile.Of(steps, pick);
             return any ? (lo, hi, edge, most ?? new LineLoad(), met, span) : (0, 0, 0, new LineLoad(), new List<string>(), 0);
         }
 
