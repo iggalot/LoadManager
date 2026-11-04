@@ -6,6 +6,20 @@ using BuildingModel.Model;
 
 namespace LoadManager
 {
+    /// <summary>A concentrated load on a wall's top or along a beam: a beam's end, a column's base.</summary>
+    public sealed class ConcentratedLoad
+    {
+        /// <summary>Where it is on the plan.</summary>
+        public Point2 Where { get; set; }
+        /// <summary>How far along the wall or beam from its start (ft).</summary>
+        public double At { get; set; }
+        public PointLoad Load { get; set; } = new PointLoad();
+        /// <summary>What brings it ("BM1", "C2"), and the wall it came down through when it came from above ("BM1 via W7").</summary>
+        public string From { get; set; }
+
+        public override string ToString() => $"{From} at {At:0.##} ft: {Load}";
+    }
+
     /// <summary>What lands on a wall's top on one story, by the gravity load path.</summary>
     public sealed class WallTopLoad
     {
@@ -23,15 +37,61 @@ namespace LoadManager
         public double TributaryMax { get; set; }
         /// <summary>The walls standing on it ("W7").</summary>
         public List<string> Above { get; } = new List<string>();
+        /// <summary>Beam ends and columns landing on it, here or on a wall above that stands on it (each needs a post).</summary>
+        public List<ConcentratedLoad> Points { get; } = new List<ConcentratedLoad>();
         public List<string> Notes { get; } = new List<string>();
 
-        /// <summary>One line: "trib 6–10 ft; from the wall above W7".</summary>
+        /// <summary>One line: "tributary 6 to 10 ft; plus the wall above W7; 2 concentrated loads".</summary>
         public string Describe()
         {
             string t = TributaryMax <= 0 ? "no floor or roof bears on it" :
                 Math.Abs(TributaryMax - TributaryMin) < 0.005 ? $"tributary {TributaryMax:0.##} ft" : $"tributary {TributaryMin:0.##} to {TributaryMax:0.##} ft";
-            return t + (Above.Count > 0 ? "; plus the wall" + (Above.Count > 1 ? "s" : "") + " above " + string.Join(", ", Above) : "");
+            return t + (Above.Count > 0 ? "; plus the wall" + (Above.Count > 1 ? "s" : "") + " above " + string.Join(", ", Above) : "")
+                     + (Points.Count > 0 ? $"; {Points.Count} concentrated load{(Points.Count > 1 ? "s" : "")}" : "");
         }
+    }
+
+    /// <summary>A part-length line load on a beam: a wall standing on it.</summary>
+    public sealed class PartialLoad
+    {
+        public string From { get; set; }
+        /// <summary>From and to, along the beam from its start (ft).</summary>
+        public double A { get; set; }
+        public double B { get; set; }
+        public LineLoad Load { get; set; } = new LineLoad();
+    }
+
+    /// <summary>A beam's loads and its end reactions (simple span), by the gravity load path.</summary>
+    public sealed class BeamLoad
+    {
+        public string BeamId { get; set; }
+        public string LevelId { get; set; }
+        public double Span { get; set; }
+        /// <summary>Its share of the level's floor or roof (plf, the most along it, taken over the whole span).</summary>
+        public LineLoad FromLevel { get; set; } = new LineLoad();
+        public double TributaryMin { get; set; }
+        public double TributaryMax { get; set; }
+        /// <summary>Walls standing on it.</summary>
+        public List<PartialLoad> Partials { get; } = new List<PartialLoad>();
+        /// <summary>Beams framing into it and columns standing on it.</summary>
+        public List<ConcentratedLoad> Points { get; } = new List<ConcentratedLoad>();
+        public PointLoad StartReaction { get; set; } = new PointLoad();
+        public PointLoad EndReaction { get; set; } = new PointLoad();
+        /// <summary>What each end bears on (a wall, a column, a beam), or null when nothing is drawn under it.</summary>
+        public string StartOn { get; set; }
+        public string EndOn { get; set; }
+        public List<string> Notes { get; } = new List<string>();
+    }
+
+    /// <summary>What a column carries down to its base.</summary>
+    public sealed class ColumnLoad
+    {
+        public string ColumnId { get; set; }
+        public PointLoad Load { get; set; } = new PointLoad();
+        /// <summary>What lands on it ("BM1 at Level 2").</summary>
+        public List<string> From { get; } = new List<string>();
+        /// <summary>What it stands on: a wall, a beam, a column, or "the foundation"; null when nothing is drawn under it.</summary>
+        public string BaseOn { get; set; }
     }
 
     /// <summary>
@@ -39,14 +99,18 @@ namespace LoadManager
     /// beams under it by tributary width — the framing spans one way (the diaphragm's <see cref="Diaphragm.EffectiveSpan"/>;
     /// a sloped roof across its ridge) and each bearing line takes half the distance to the next one on each side, or all
     /// of it to the edge where there is none (an eave, a cantilever, or a support not drawn). Walls standing on a wall
-    /// below bring their load and their own weight (<see cref="LoadSection.WallDead"/>) down to it; the levels are taken
-    /// from the top down. The most along each wall is kept (a uniform load as large as the largest part).
-    /// Not traced yet: beam reactions, columns, and a wall standing on the floor framing instead of on a wall (noted).
+    /// below bring their load and their own weight (<see cref="LoadSection.WallDead"/>) down to it; a wall standing on a
+    /// beam loads the beam over its length. Beams are simple spans: their end reactions land on the wall, column or beam
+    /// under each end, and columns carry what lands on them down to their base. Beam ends and columns on a wall are
+    /// concentrated loads on it, carried on down the walls under it. The levels are taken from the top down. The most
+    /// along each wall or beam is kept (a uniform load as large as the largest part).
     /// </summary>
     public static class GravityLoadPath
     {
         /// <summary>How finely a wall is sampled along its length (ft).</summary>
         public const double Step = 0.25;
+        /// <summary>How near a beam end or a column must be to what carries it (ft), as the building model finds column bases.</summary>
+        public const double Bearing = 0.25;
         private const double Tol = 0.01;
 
         public static string Key(string wallId, string levelId) => wallId + "|" + levelId;
@@ -61,11 +125,39 @@ namespace LoadManager
             return manual ?? computed?.Load;
         }
 
-        /// <summary>Global remarks (a wall standing on nothing under it, and so on).</summary>
+        /// <summary>The walls' top loads (by <see cref="Key"/>), the beams', the columns', and global remarks.</summary>
         public sealed class Result : Dictionary<string, WallTopLoad>
         {
+            public Dictionary<string, BeamLoad> Beams { get; } = new Dictionary<string, BeamLoad>();
+            public Dictionary<string, ColumnLoad> Columns { get; } = new Dictionary<string, ColumnLoad>();
             public List<string> Notes { get; } = new List<string>();
         }
+
+        /// <summary>A bearing line on a level: a wall under it or a beam on it.</summary>
+        private sealed class Line
+        {
+            public string Id;
+            public Point2 Start, End;
+            public WallDirection Dir;
+            public bool IsBeam;
+            public double Length => Dist(Start, End);
+        }
+
+        /// <summary>A concentrated load going down to what is under it.</summary>
+        private sealed class Landing
+        {
+            public string Target;
+            public Point2 Where;
+            public PointLoad Load;
+            public string From;
+        }
+
+        /// <summary>A beam's direction: square to the plan when its ends are within <see cref="Bearing"/> of one line (drawn by hand).</summary>
+        private static WallDirection DirOf(Point2 a, Point2 b) =>
+            Dist(a, b) <= Bearing ? WallDirection.NotOrthogonal
+            : Math.Abs(a.Y - b.Y) <= Bearing && Math.Abs(a.X - b.X) > Bearing ? WallDirection.WestEast
+            : Math.Abs(a.X - b.X) <= Bearing && Math.Abs(a.Y - b.Y) > Bearing ? WallDirection.SouthNorth
+            : WallDirection.NotOrthogonal;
 
         public static Result Run(Building b, LoadSection s)
         {
@@ -74,7 +166,9 @@ namespace LoadManager
             s = s ?? new LoadSection();
             var levels = b.LevelsBottomUp.Where(l => l.Elevation > 0).OrderByDescending(l => l.Elevation).ToList();
             var roof = b.RoofLevel();
-            string Name(Wall w) => w.Id;
+            ColumnLoad Col(string id) => result.Columns.TryGetValue(id, out var c) ? c : result.Columns[id] = new ColumnLoad { ColumnId = id };
+            double Elev(string levelId) => b.Level(levelId)?.Elevation ?? 0;
+            foreach (var c in b.Columns) Col(c.Id);
 
             foreach (var lv in levels)
             {
@@ -82,31 +176,103 @@ namespace LoadManager
                 var plates = Plates(b, lv, roof);
                 var bearing = b.Walls.Where(w => w.Direction != WallDirection.NotOrthogonal && b.LevelsAlong(w).Any(x => x.Id == lv.Id)).ToList();
                 var beams = b.Beams.Where(m => m.LevelId == lv.Id).ToList();
+                // the columns under this level: base below it, top at or above it
+                var columns = b.Columns.Where(c => Elev(c.BaseLevelId) < lv.Elevation - Tol && Elev(c.TopLevelId) >= lv.Elevation - Tol).ToList();
+                var lines = bearing.Select(w => new Line { Id = w.Id, Start = w.Start, End = w.End, Dir = w.Direction })
+                                   .Concat(beams.Select(m => new Line { Id = m.Id, Start = m.Start, End = m.End, Dir = DirOf(m.Start, m.End), IsBeam = true })).ToList();
+                var landings = new List<Landing>();
 
+                // what carries a point at this level: a wall under it, a column under it, else a beam on it (not at that beam's own end)
+                string SupportOf(Point2 at, string exceptBeam, string exceptColumn)
+                {
+                    var w = bearing.FirstOrDefault(x => DistanceToSegment(at, x.Start, x.End) <= Bearing);
+                    if (w != null) return w.Id;
+                    var c = columns.FirstOrDefault(x => x.Id != exceptColumn && Dist(x.At, at) <= Bearing);
+                    if (c != null) return c.Id;
+                    return beams.FirstOrDefault(x => x.Id != exceptBeam && DistanceToSegment(at, x.Start, x.End) <= Bearing && Dist(at, x.Start) > Bearing && Dist(at, x.End) > Bearing)?.Id;
+                }
+
+                // (a) the columns standing on this level put what they carry on what is under them
+                foreach (var c in b.Columns.Where(c => c.BaseLevelId == lv.Id))
+                {
+                    var cl = Col(c.Id);
+                    cl.BaseOn = SupportOf(c.At, null, c.Id);
+                    if (cl.BaseOn == null) result.Notes.Add($"{c.Id} stands on nothing drawn at {lv.Name}: what it carries is not traced down.");
+                    else if (!cl.Load.IsEmpty) landings.Add(new Landing { Target = cl.BaseOn, Where = c.At, Load = cl.Load, From = c.Id });
+                }
+
+                // (b) the beams, those framing into a girder before the girder
+                var ends = beams.ToDictionary(m => m.Id, m => (start: SupportOf(m.Start, m.Id, null), end: SupportOf(m.End, m.Id, null)));
+                var order = new List<Beam>();
+                var left = beams.ToList();
+                while (left.Count > 0)
+                {
+                    var ready = left.Where(m => !left.Any(o => o.Id != m.Id && (ends[o.Id].start == m.Id || ends[o.Id].end == m.Id))).ToList();
+                    if (ready.Count == 0)
+                    {
+                        result.Notes.Add($"Beams at {lv.Name} bear on each other in a loop ({string.Join(", ", left.Select(m => m.Id))}): their reactions may be missing a share.");
+                        ready = left.ToList();
+                    }
+                    order.AddRange(ready);
+                    left.RemoveAll(ready.Contains);
+                }
+                foreach (var m in order)
+                {
+                    var me = lines.First(l => l.IsBeam && l.Id == m.Id);
+                    var r = new BeamLoad { BeamId = m.Id, LevelId = lv.Id, Span = me.Length };
+                    result.Beams[m.Id] = r;
+                    if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
+                    else
+                    {
+                        var (lo, hi, edge) = TributaryAll(me, plates, lines);
+                        r.TributaryMax = hi; r.TributaryMin = lo;
+                        r.FromLevel = area.Times(hi);
+                        if (edge > Bearing) r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge ({edge:0.##} ft) is all on this beam.");
+                    }
+                    // walls standing on it, with the concentrated loads they bring down
+                    foreach (var a in b.Walls.Where(a => a.BaseLevelId == lv.Id))
+                    {
+                        var (o0, o1) = OverlapAlong(me, a.Start, a.End, a.Direction);
+                        if (o1 - o0 <= Tol) continue;
+                        var aUp = b.LevelsAlong(a).FirstOrDefault();
+                        if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
+                        r.Partials.Add(new PartialLoad { From = a.Id, A = o0, B = o1, Load = ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) } });
+                        foreach (var p in ar.Points.Where(p => DistanceToSegment(p.Where, me.Start, me.End) <= Bearing))
+                            r.Points.Add(new ConcentratedLoad { Where = p.Where, At = Along(me, p.Where), Load = p.Load, From = Via(p.From, a.Id) });
+                    }
+                    foreach (var g in landings.Where(g => g.Target == m.Id))
+                        r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From });
+                    Reactions(r);
+                    r.StartOn = ends[m.Id].start; r.EndOn = ends[m.Id].end;
+                    foreach (var (on, pt, R, which) in new[] { (r.StartOn, m.Start, r.StartReaction, "start"), (r.EndOn, m.End, r.EndReaction, "end") })
+                    {
+                        if (on == null) { r.Notes.Add($"Nothing drawn under its {which} ({pt.X:0.##}, {pt.Y:0.##}): its reaction is not traced down."); continue; }
+                        if (!R.IsEmpty) landings.Add(new Landing { Target = on, Where = pt, Load = R, From = m.Id });
+                    }
+                }
+
+                // (c) the walls
                 foreach (var w in bearing)
                 {
+                    var me = lines.First(l => !l.IsBeam && l.Id == w.Id);
                     var r = new WallTopLoad { WallId = w.Id, LevelId = lv.Id };
-                    // the level's floor or roof, by tributary width
-                    double tMin = double.MaxValue, tMax = 0, edgeMax = 0;
-                    foreach (var p in plates)
-                    {
-                        var (lo, hi, edge) = Tributary(w, p, bearing, beams);
-                        if (hi <= 0) continue;
-                        tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang);
-                    }
-                    r.TributaryMax = tMax;
-                    r.TributaryMin = tMax > 0 ? tMin : 0;
-                    r.FromLevel = area.Times(tMax);
-                    if (edgeMax > Tol)
-                        r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge of the {(lv == roof ? "roof" : "floor")} ({edgeMax:0.##} ft past any eave) is all on this wall — a cantilever, or a support not drawn.");
+                    var (lo, hi, edge) = TributaryAll(me, plates, lines);
+                    r.TributaryMax = hi;
+                    r.TributaryMin = lo;
+                    r.FromLevel = area.Times(hi);
+                    if (edge > Bearing)
+                        r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge of the {(lv == roof ? "roof" : "floor")} ({edge:0.##} ft past any eave) is all on this wall — a cantilever, or a support not drawn.");
 
                     // what stands on it: the same wall going on up, or walls whose base is this level on its line
                     var up = b.LevelsAlong(w).Where(x => x.Elevation > lv.Elevation).OrderBy(x => x.Elevation).FirstOrDefault();
                     if (up != null)
                     {
                         if (result.TryGetValue(Key(w.Id, up.Id), out var cont))
+                        {
                             r.FromAbove = cont.Load + new LineLoad { Dead = s.WallDead * (up.Elevation - lv.Elevation) };
-                        r.Above.Add(Name(w) + " (its story above)");
+                            r.Points.AddRange(cont.Points.Select(p => new ConcentratedLoad { Where = p.Where, Load = p.Load, From = p.From }));
+                        }
+                        r.Above.Add(w.Id + " (its story above)");
                     }
                     else
                     {
@@ -115,19 +281,60 @@ namespace LoadManager
                             var aUp = b.LevelsAlong(a).FirstOrDefault();
                             if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
                             r.FromAbove = LineLoad.Max(r.FromAbove, ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) });
-                            r.Above.Add(Name(a));
+                            r.Above.Add(a.Id);
+                            foreach (var p in ar.Points.Where(p => DistanceToSegment(p.Where, w.Start, w.End) <= Bearing))
+                                r.Points.Add(new ConcentratedLoad { Where = p.Where, Load = p.Load, From = Via(p.From, a.Id) });
                         }
                     }
+                    foreach (var g in landings.Where(g => g.Target == w.Id))
+                        r.Points.Add(new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From });
+                    foreach (var p in r.Points) p.At = Along(me, p.Where);
                     r.Load = r.FromLevel + r.FromAbove;
                     result[Key(w.Id, lv.Id)] = r;
                 }
 
-                // walls standing on this level with nothing under them
+                // (d) beam ends and columns landing on a column under this level
+                foreach (var g in landings.Where(g => columns.Any(c => c.Id == g.Target)))
+                {
+                    var cl = Col(g.Target);
+                    cl.Load = cl.Load + g.Load;
+                    cl.From.Add($"{g.From} at {lv.Name}");
+                }
+
+                // walls standing on this level with no wall or beam under them
                 foreach (var a in b.Walls.Where(a => a.BaseLevelId == lv.Id))
-                    if (!bearing.Any(w => w.Id != a.Id && Overlap(a, w) > Tol))
-                        result.Notes.Add($"{a.Id} stands on the {lv.Name} framing, not on a wall: its load is not traced down (a beam or the floor carries it).");
+                    if (!bearing.Any(w => w.Id != a.Id && Overlap(a, w) > Tol) &&
+                        !lines.Any(l => l.IsBeam && OverlapAlong(l, a.Start, a.End, a.Direction).b - OverlapAlong(l, a.Start, a.End, a.Direction).a > Tol))
+                        result.Notes.Add($"{a.Id} stands on the {lv.Name} framing, not on a wall or beam: its load is not traced down (the floor carries it).");
             }
+            foreach (var c in b.Columns.Where(c => Elev(c.BaseLevelId) <= Tol)) Col(c.Id).BaseOn = "the foundation";
             return result;
+        }
+
+        /// <summary>"BM1 via W7": a load brought down through a wall (the first wall it came through is kept).</summary>
+        private static string Via(string from, string wall) => from.Contains(" via ") ? from : $"{from} via {wall}";
+
+        /// <summary>A simple span's end reactions from its uniform, part-length and concentrated loads (statics, each kind alike).</summary>
+        private static void Reactions(BeamLoad r)
+        {
+            double L = r.Span;
+            if (L <= Tol) return;
+            var total = r.FromLevel.Over(L);
+            var end = r.FromLevel.Over(L).Times(0.5);
+            foreach (var p in r.Partials)
+            {
+                var q = p.Load.Over(p.B - p.A);
+                total += q;
+                end += q.Times((p.A + p.B) / 2 / L);
+            }
+            foreach (var p in r.Points)
+            {
+                double x = Math.Max(0, Math.Min(L, p.At));
+                total += p.Load;
+                end += p.Load.Times(x / L);
+            }
+            r.EndReaction = end;
+            r.StartReaction = total + end.Times(-1);
         }
 
         /// <summary>A floor or roof on a level: where it is and which way its framing spans.</summary>
@@ -159,31 +366,36 @@ namespace LoadManager
             return list;
         }
 
+        /// <summary>The tributary width on a bearing line from every plate on the level, and the most to an edge past any eave.</summary>
+        private static (double lo, double hi, double edge) TributaryAll(Line me, List<Plate> plates, List<Line> lines)
+        {
+            double tMin = double.MaxValue, tMax = 0, edgeMax = 0;
+            foreach (var p in plates)
+            {
+                var (lo, hi, edge) = Tributary(me, p, lines);
+                if (hi <= 0) continue;
+                tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang);
+            }
+            return (tMax > 0 ? tMin : 0, tMax, edgeMax);
+        }
+
         /// <summary>
-        /// The tributary width of a plate's framing on a wall (ft): the least and the most along it, and the most taken to
-        /// an edge with no support (0, 0 when the framing runs along the wall or the plate does not reach it).
+        /// The tributary width of a plate's framing on a bearing line (ft): the least and the most along it, and the most taken to
+        /// an edge with no support (0, 0 when the framing runs along the line or the plate does not reach it).
         /// </summary>
-        private static (double lo, double hi, double edge) Tributary(Wall w, Plate p, List<Wall> walls, List<Beam> beams)
+        private static (double lo, double hi, double edge) Tributary(Line w, Plate p, List<Line> all)
         {
             // joists running W-E bear on S-N lines, and the other way round
             bool alongX = p.Span == SpanDirection.WestEast;
-            if (alongX ? w.Direction != WallDirection.SouthNorth : w.Direction != WallDirection.WestEast) return (0, 0, 0);
-            double c0 = alongX ? w.Start.X : w.Start.Y;                                   // the wall's line across the span
+            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0);
+            double c0 = alongX ? w.Start.X : w.Start.Y;                                   // the line's position across the span
             double s0 = alongX ? Math.Min(w.Start.Y, w.End.Y) : Math.Min(w.Start.X, w.End.X);
             double s1 = alongX ? Math.Max(w.Start.Y, w.End.Y) : Math.Max(w.Start.X, w.End.X);
 
             // the other bearing lines across the span: (position, from, to)
-            var lines = new List<(double c, double a, double b)>();
-            foreach (var o in walls)
-                if (o.Id != w.Id && o.Direction == w.Direction)
-                    lines.Add(alongX ? (o.Start.X, Math.Min(o.Start.Y, o.End.Y), Math.Max(o.Start.Y, o.End.Y))
-                                     : (o.Start.Y, Math.Min(o.Start.X, o.End.X), Math.Max(o.Start.X, o.End.X)));
-            foreach (var m in beams)
-            {
-                bool sn = Math.Abs(m.Start.X - m.End.X) < Tol, we = Math.Abs(m.Start.Y - m.End.Y) < Tol;
-                if (alongX && sn) lines.Add((m.Start.X, Math.Min(m.Start.Y, m.End.Y), Math.Max(m.Start.Y, m.End.Y)));
-                if (!alongX && we) lines.Add((m.Start.Y, Math.Min(m.Start.X, m.End.X), Math.Max(m.Start.X, m.End.X)));
-            }
+            var lines = all.Where(o => !(o.Id == w.Id && o.IsBeam == w.IsBeam) && o.Dir == w.Dir)
+                           .Select(o => alongX ? (c: o.Start.X, a: Math.Min(o.Start.Y, o.End.Y), b: Math.Max(o.Start.Y, o.End.Y))
+                                               : (c: o.Start.Y, a: Math.Min(o.Start.X, o.End.X), b: Math.Max(o.Start.X, o.End.X))).ToList();
             var cells = p.Region.Cells().ToList();
             int n = Math.Max(1, (int)Math.Ceiling((s1 - s0) / Step));
             double lo = double.MaxValue, hi = 0, edge = 0;
@@ -191,7 +403,7 @@ namespace LoadManager
             for (int i = 0; i < n; i++)
             {
                 double s = s0 + (i + 0.5) * (s1 - s0) / n;
-                // the plate's extent across the span through this point of the wall
+                // the plate's extent across the span through this point of the line
                 var spans = cells.Where(c => alongX ? c.Y0 <= s && s <= c.Y1 : c.X0 <= s && s <= c.X1)
                                  .Select(c => alongX ? (c.X0, c.X1) : (c.Y0, c.Y1)).OrderBy(x => x.Item1).ToList();
                 var merged = new List<(double a, double b)>();
@@ -218,12 +430,44 @@ namespace LoadManager
         /// <summary>How long two walls run on the same line together (ft); 0 when they are not on one line.</summary>
         private static double Overlap(Wall a, Wall b)
         {
-            if (a.Direction == WallDirection.NotOrthogonal || a.Direction != b.Direction) return 0;
-            bool we = a.Direction == WallDirection.WestEast;
-            if (Math.Abs(we ? a.Start.Y - b.Start.Y : a.Start.X - b.Start.X) > Tol) return 0;
-            double a0 = we ? Math.Min(a.Start.X, a.End.X) : Math.Min(a.Start.Y, a.End.Y), a1 = we ? Math.Max(a.Start.X, a.End.X) : Math.Max(a.Start.Y, a.End.Y);
-            double b0 = we ? Math.Min(b.Start.X, b.End.X) : Math.Min(b.Start.Y, b.End.Y), b1 = we ? Math.Max(b.Start.X, b.End.X) : Math.Max(b.Start.Y, b.End.Y);
-            return Math.Max(0, Math.Min(a1, b1) - Math.Max(a0, b0));
+            if (b.Direction == WallDirection.NotOrthogonal) return 0;
+            var (o0, o1) = OverlapAlong(new Line { Id = b.Id, Start = b.Start, End = b.End, Dir = b.Direction }, a.Start, a.End, a.Direction);
+            return Math.Max(0, o1 - o0);
+        }
+
+        /// <summary>Where a segment on the same line overlaps a bearing line, along it from its start (ft); (0, 0) when it does not.</summary>
+        private static (double a, double b) OverlapAlong(Line l, Point2 s, Point2 e, WallDirection d)
+        {
+            if (d == WallDirection.NotOrthogonal || l.Dir != d) return (0, 0);
+            bool we = d == WallDirection.WestEast;
+            if (Math.Abs(we ? s.Y - l.Start.Y : s.X - l.Start.X) > (l.IsBeam ? Bearing : Tol)) return (0, 0);
+            double l0 = we ? Math.Min(l.Start.X, l.End.X) : Math.Min(l.Start.Y, l.End.Y), l1 = we ? Math.Max(l.Start.X, l.End.X) : Math.Max(l.Start.Y, l.End.Y);
+            double a0 = we ? Math.Min(s.X, e.X) : Math.Min(s.Y, e.Y), a1 = we ? Math.Max(s.X, e.X) : Math.Max(s.Y, e.Y);
+            double lo = Math.Max(l0, a0), hi = Math.Min(l1, a1);
+            if (hi - lo <= 0) return (0, 0);
+            // measured from the line's start, whichever way it was drawn
+            double st = we ? l.Start.X : l.Start.Y;
+            double x0 = Math.Abs(lo - st), x1 = Math.Abs(hi - st);
+            return (Math.Min(x0, x1), Math.Max(x0, x1));
+        }
+
+        /// <summary>How far along a line from its start a point is (ft, its projection, kept on the line).</summary>
+        private static double Along(Line l, Point2 p)
+        {
+            double len = l.Length;
+            if (len < 1e-9) return 0;
+            double t = ((p.X - l.Start.X) * (l.End.X - l.Start.X) + (p.Y - l.Start.Y) * (l.End.Y - l.Start.Y)) / len;
+            return Math.Max(0, Math.Min(len, t));
+        }
+
+        private static double Dist(Point2 a, Point2 b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
+        private static double DistanceToSegment(Point2 p, Point2 a, Point2 b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y, len2 = dx * dx + dy * dy;
+            if (len2 < 1e-12) return Dist(p, a);
+            double t = Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / len2));
+            return Dist(p, new Point2(a.X + t * dx, a.Y + t * dy));
         }
     }
 }

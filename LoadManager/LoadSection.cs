@@ -41,6 +41,25 @@ namespace LoadManager
             Dead = System.Math.Max(a?.Dead ?? 0, b?.Dead ?? 0), Live = System.Math.Max(a?.Live ?? 0, b?.Live ?? 0),
             RoofLive = System.Math.Max(a?.RoofLive ?? 0, b?.RoofLive ?? 0), Snow = System.Math.Max(a?.Snow ?? 0, b?.Snow ?? 0),
         };
+
+        /// <summary>The whole load over a length (ft): lb.</summary>
+        public PointLoad Over(double lengthFt) => new PointLoad { Dead = Dead * lengthFt, Live = Live * lengthFt, RoofLive = RoofLive * lengthFt, Snow = Snow * lengthFt };
+    }
+
+    /// <summary>A concentrated load (lb): a beam's reaction, what a column carries.</summary>
+    [DataContract]
+    public sealed class PointLoad : GravityLoad
+    {
+        public static PointLoad operator +(PointLoad a, PointLoad b) => new PointLoad
+        {
+            Dead = (a?.Dead ?? 0) + (b?.Dead ?? 0), Live = (a?.Live ?? 0) + (b?.Live ?? 0),
+            RoofLive = (a?.RoofLive ?? 0) + (b?.RoofLive ?? 0), Snow = (a?.Snow ?? 0) + (b?.Snow ?? 0),
+        };
+
+        /// <summary>Each kind times a factor (a share of a load).</summary>
+        public PointLoad Times(double k) => new PointLoad { Dead = Dead * k, Live = Live * k, RoofLive = RoofLive * k, Snow = Snow * k };
+
+        public override string ToString() => $"D {Dead:0}, L {Live:0}, Lr {RoofLive:0}, S {Snow:0} lb";
     }
 
     /// <summary>An area load (psf, on the horizontal projection).</summary>

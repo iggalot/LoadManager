@@ -169,6 +169,168 @@ namespace LoadManager.Tests
             Assert.IsTrue(r.Notes.Any(x => x.StartsWith(odd.Id)));
         }
 
+        // ------------------------------------------------------------------ beams and columns
+
+        /// <summary>A flat-roofed one story, 30 (W-E) × 20 (S-N), framing S-N, the S and N walls; a beam along y = 10.</summary>
+        private static Building BeamStory(out Level l2, out Wall s, out Beam bm)
+        {
+            var b = Building.New("Beam");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            l2 = b.AddLevel("Level 2", 10);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            s = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
+            bm = b.AddBeam(l2, 0, 10, 30, 10);
+            return b;
+        }
+
+        /// <summary>
+        /// D 10, Lr 20 psf; the beam takes 5 + 5 = 10 ft: 100 and 200 plf over 30 ft, so each end 1500 and 3000 lb, onto a
+        /// post to the foundation. The S wall takes 5 ft: D 50.
+        /// </summary>
+        [TestMethod]
+        public void Beam_OnColumns_ToTheFoundation()
+        {
+            var b = BeamStory(out var l2, out var s, out var bm);
+            var c1 = b.AddColumn(b.Ground, l2, 0, 10);
+            var c2 = b.AddColumn(b.Ground, l2, 30, 10);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10, RoofLive = 20 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            var rb = r.Beams[bm.Id];
+            Assert.AreEqual(10, rb.TributaryMax, Tol);
+            Assert.AreEqual(1500, rb.StartReaction.Dead, Tol);
+            Assert.AreEqual(3000, rb.EndReaction.RoofLive, Tol);
+            Assert.AreEqual(c1.Id, rb.StartOn);
+            Assert.AreEqual(c2.Id, rb.EndOn);
+            Assert.AreEqual(1500, r.Columns[c1.Id].Load.Dead, Tol);
+            Assert.AreEqual(3000, r.Columns[c2.Id].Load.RoofLive, Tol);
+            Assert.AreEqual("the foundation", r.Columns[c1.Id].BaseOn);
+            Assert.AreEqual(50, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Dead, Tol);
+            Assert.AreEqual(0, rb.Notes.Count);
+        }
+
+        /// <summary>The same beam on the W and E walls: each wall gets its 1500 lb end as a concentrated load 10 ft along it.</summary>
+        [TestMethod]
+        public void Beam_OnWalls_ConcentratedLoads()
+        {
+            var b = BeamStory(out var l2, out _, out var bm);
+            var w = b.AddWall(b.Ground, l2, 0, 0, 0, 20);
+            var e = b.AddWall(b.Ground, l2, 30, 0, 30, 20);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            var pw = r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single();
+            Assert.AreEqual(bm.Id, pw.From);
+            Assert.AreEqual(10, pw.At, Tol);
+            Assert.AreEqual(1500, pw.Load.Dead, Tol);
+            Assert.AreEqual(0, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);     // the framing runs along it
+            Assert.AreEqual(1500, r[GravityLoadPath.Key(e.Id, l2.Id)].Points.Single().Load.Dead, Tol);
+        }
+
+        /// <summary>
+        /// Two stories (10 and 20 ft). Roof D 10, Lr 20; Level 2 D 10, L 40; walls 10 psf. On the roof the interior wall I
+        /// (x 10 to 20, y = 10) takes 10 ft: D 100, Lr 200 plf. It stands on the beam at Level 2 (y = 10, 30 ft, on posts):
+        /// the beam takes 10 ft of floor (D 100, L 400 plf) and I over 10 ft in the middle (D 100 + 10 × 10 = 200, Lr 200).
+        /// Each end: D 100 × 15 + 200 × 10 / 2 = 2500, L 400 × 15 = 6000, Lr 200 × 10 / 2 = 1000. The S wall at Level 2: floor
+        /// 5 ft (D 50, L 200) plus the S wall above (D 100, Lr 200) and its weight (100): D 250, L 200, Lr 200.
+        /// </summary>
+        [TestMethod]
+        public void WallOnABeam_TwoStories()
+        {
+            var b = Building.New("Two");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            var s1 = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
+            b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            var i = b.AddWall(l2, rf, 10, 10, 20, 10);
+            var bm = b.AddBeam(l2, 0, 10, 30, 10);
+            var c1 = b.AddColumn(b.Ground, l2, 0, 10);
+            b.AddColumn(b.Ground, l2, 30, 10);
+            LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10, RoofLive = 20 });
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10, Live = 40 });
+            LoadSection.SetWallDead(b, 10);
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+
+            Assert.AreEqual(100, r[GravityLoadPath.Key(i.Id, rf.Id)].Load.Dead, Tol);
+            var rb = r.Beams[bm.Id];
+            var p = rb.Partials.Single();
+            Assert.AreEqual(i.Id, p.From);
+            Assert.AreEqual(10, p.A, Tol);
+            Assert.AreEqual(20, p.B, Tol);
+            Assert.AreEqual(200, p.Load.Dead, Tol);
+            Assert.AreEqual(2500, rb.StartReaction.Dead, Tol);
+            Assert.AreEqual(2500, rb.EndReaction.Dead, Tol);
+            Assert.AreEqual(6000, rb.StartReaction.Live, Tol);
+            Assert.AreEqual(1000, rb.EndReaction.RoofLive, Tol);
+            var col = r.Columns[c1.Id];
+            Assert.AreEqual(2500, col.Load.Dead, Tol);
+            Assert.AreEqual(6000, col.Load.Live, Tol);
+            Assert.AreEqual(1000, col.Load.RoofLive, Tol);
+            var rs = r[GravityLoadPath.Key(s1.Id, l2.Id)];
+            Assert.AreEqual(250, rs.Load.Dead, Tol);
+            Assert.AreEqual(200, rs.Load.Live, Tol);
+            Assert.AreEqual(200, rs.Load.RoofLive, Tol);
+            Assert.IsFalse(r.Notes.Any(x => x.StartsWith(i.Id)));       // it stands on the beam
+        }
+
+        /// <summary>
+        /// A beam (y = 10, x 0 to 15) from the W wall into a girder (x = 15, y 0 to 20) on the S and N walls. D 10: the beam
+        /// takes 10 ft, 100 plf over 15 ft, so 750 lb each end; the girder carries the 750 at its middle, 375 to each wall.
+        /// </summary>
+        [TestMethod]
+        public void Beam_IntoAGirder()
+        {
+            var b = BeamStory(out var l2, out var s, out var unused);
+            b.Beams.Remove(unused);
+            var w = b.AddWall(b.Ground, l2, 0, 0, 0, 20);
+            var g = b.AddBeam(l2, 15, 0, 15, 20);
+            var bm = b.AddBeam(l2, 0, 10, 15, 10);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.AreEqual(750, r.Beams[bm.Id].EndReaction.Dead, Tol);
+            Assert.AreEqual(g.Id, r.Beams[bm.Id].EndOn);
+            Assert.AreEqual(w.Id, r.Beams[bm.Id].StartOn);
+            Assert.AreEqual(0, r.Beams[g.Id].FromLevel.Dead, Tol);        // the framing runs along it
+            Assert.AreEqual(10, r.Beams[g.Id].Points.Single().At, Tol);
+            Assert.AreEqual(375, r.Beams[g.Id].StartReaction.Dead, Tol);
+            var ps = r[GravityLoadPath.Key(s.Id, l2.Id)].Points.Single();
+            Assert.AreEqual(g.Id, ps.From);
+            Assert.AreEqual(15, ps.At, Tol);
+            Assert.AreEqual(375, ps.Load.Dead, Tol);
+            Assert.AreEqual(750, r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single().Load.Dead, Tol);
+        }
+
+        /// <summary>A roof beam's 1500 lb end on the W wall upstairs comes down to the W wall under it, at the same place.</summary>
+        [TestMethod]
+        public void ConcentratedLoad_ComesDownTheWallUnder()
+        {
+            var b = Building.New("Post");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            var w1 = b.AddWall(b.Ground, l2, 0, 0, 0, 20);
+            b.AddWall(l2, rf, 0, 0, 0, 20);
+            b.AddWall(l2, rf, 30, 0, 30, 20);
+            b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            var bm = b.AddBeam(rf, 0, 10, 30, 10);
+            LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            var p = r[GravityLoadPath.Key(w1.Id, l2.Id)].Points.Single();
+            Assert.IsTrue(p.From.StartsWith(bm.Id + " via "));
+            Assert.AreEqual(10, p.At, Tol);
+            Assert.AreEqual(1500, p.Load.Dead, Tol);
+        }
+
         [TestMethod]
         public void Effective_HandEnteredWins()
         {
