@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
@@ -71,6 +72,26 @@ namespace LoadManager
     }
 
     /// <summary>
+    /// A load zone: a rectangle of a level (on the plan, ft) whose area loads take the place of the level's there — a deck,
+    /// a corridor, a storage room. Where zones overlap, the larger of each kind applies.
+    /// </summary>
+    [DataContract]
+    public sealed class LoadZone
+    {
+        [DataMember(Order = 1)] public string LevelId { get; set; }
+        [DataMember(Order = 2)] public string Name { get; set; }
+        [DataMember(Order = 3)] public double X0 { get; set; }
+        [DataMember(Order = 4)] public double Y0 { get; set; }
+        [DataMember(Order = 5)] public double X1 { get; set; }
+        [DataMember(Order = 6)] public double Y1 { get; set; }
+        [DataMember(Order = 7)] public AreaLoad Load { get; set; } = new AreaLoad();
+
+        public bool IsValid => X1 > X0 && Y1 > Y0 && Load != null;
+        public bool SameAs(LoadZone o) => o != null && LevelId == o.LevelId && (Name ?? "") == (o.Name ?? "") && X0 == o.X0 && Y0 == o.Y0 && X1 == o.X1 && Y1 == o.Y1 && (Load ?? new AreaLoad()).SameAs(o.Load ?? new AreaLoad());
+        public override string ToString() => $"{Name} ({X0:0.##}, {Y0:0.##}) to ({X1:0.##}, {Y1:0.##}): {Load} psf";
+    }
+
+    /// <summary>
     /// The load manager's section of the project file (the building's "Loads" data), as the wind app keeps its "Wind"
     /// section: the loads are the project's, not the building model's. The building model only carries the section;
     /// the IDs in it are the model's (walls, levels), so loads stay on their objects.
@@ -92,7 +113,13 @@ namespace LoadManager
         /// <summary>The walls' own dead load (psf of wall elevation), carried down to what each wall stands on.</summary>
         [DataMember(Order = 3, EmitDefaultValue = false)] public double WallDead { get; set; }
 
-        public bool IsEmpty => (WallTops == null || WallTops.Count == 0) && (Levels == null || Levels.Count == 0) && !(WallDead > 0);
+        /// <summary>Load zones: parts of a level with their own area loads (a deck, a corridor, a storage room).</summary>
+        [DataMember(Order = 4, EmitDefaultValue = false)] public List<LoadZone> Zones { get; set; }
+
+        /// <summary>The zones on a level.</summary>
+        public IEnumerable<LoadZone> ZonesOn(string levelId) => (Zones ?? new List<LoadZone>()).Where(z => z.LevelId == levelId && z.IsValid);
+
+        public bool IsEmpty => (WallTops == null || WallTops.Count == 0) && (Levels == null || Levels.Count == 0) && !(WallDead > 0) && (Zones == null || Zones.Count == 0);
 
         /// <summary>The loads entered on a wall's top on the story under <paramref name="topLevelId"/>, or null (none entered).</summary>
         public LineLoad WallTop(string wallId, string topLevelId) =>
@@ -182,6 +209,30 @@ namespace LoadManager
             foreach (var kv in levels ?? new Dictionary<string, AreaLoad>()) changed |= SetLevel(b, kv.Key, kv.Value);
             changed |= SetWallDead(b, wallDead);
             return changed;
+        }
+
+        /// <summary>
+        /// Sets every load zone at once (one edit): those on a level that does not exist, or with no area, are left out; the
+        /// corners are put in order and negative loads taken as 0. False when nothing changed.
+        /// </summary>
+        public static bool SetZones(Building b, IEnumerable<LoadZone> zones)
+        {
+            if (b == null) return false;
+            var next = (zones ?? Enumerable.Empty<LoadZone>())
+                .Where(z => z != null && b.Level(z.LevelId) != null)
+                .Select(z => new LoadZone
+                {
+                    LevelId = z.LevelId, Name = string.IsNullOrWhiteSpace(z.Name) ? "Zone" : z.Name.Trim(),
+                    X0 = System.Math.Min(z.X0, z.X1), X1 = System.Math.Max(z.X0, z.X1), Y0 = System.Math.Min(z.Y0, z.Y1), Y1 = System.Math.Max(z.Y0, z.Y1),
+                    Load = new AreaLoad { Dead = P(z.Load?.Dead ?? 0), Live = P(z.Load?.Live ?? 0), RoofLive = P(z.Load?.RoofLive ?? 0), Snow = P(z.Load?.Snow ?? 0) },
+                })
+                .Where(z => z.IsValid).ToList();
+            var s = Read(b);
+            var now = s.Zones ?? new List<LoadZone>();
+            if (now.Count == next.Count && now.Zip(next, (x, y) => x.SameAs(y)).All(t => t)) return false;
+            s.Zones = next.Count == 0 ? null : next;
+            s.Write(b);
+            return true;
         }
 
         /// <summary>Sets the walls' own dead load (psf of wall). False when nothing changed.</summary>

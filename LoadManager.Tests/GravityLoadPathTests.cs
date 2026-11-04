@@ -408,6 +408,80 @@ namespace LoadManager.Tests
             Assert.AreEqual(1250, r.Foundation.Single(f => f.Id == s1.Id).Line.Dead, Tol);
         }
 
+        // ------------------------------------------------------------------ load zones
+
+        /// <summary>
+        /// The one story (framing S-N; S wall at y = 0, interior wall at y = 12, N at 20), D 15, L 40; a deck zone over x 0 to 10,
+        /// D 15, L 60. The S wall's strip is y 0 to 6: in the deck L 60 × 6 = 360 (else 240), so the most is 360; the interior
+        /// wall's strip y 6 to 16: L 60 × 10 = 600. Both meet the deck.
+        /// </summary>
+        [TestMethod]
+        public void Zone_ReplacesTheLevelsLoadsWhereItIs()
+        {
+            var b = OneStory(out var l2, out var s, out var i, out var n, out _);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 15, Live = 40 });
+            Assert.IsTrue(LoadSection.SetZones(b, new[] { new LoadZone { LevelId = l2.Id, Name = "Deck", X0 = 10, Y0 = 20, X1 = 0, Y1 = 0, Load = new AreaLoad { Dead = 15, Live = 60 } } }));
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            var rs = r[GravityLoadPath.Key(s.Id, l2.Id)];
+            Assert.AreEqual(360, rs.Load.Live, Tol);
+            Assert.AreEqual(90, rs.Load.Dead, Tol);
+            CollectionAssert.AreEqual(new[] { "Deck" }, rs.Zones);
+            Assert.AreEqual(600, r[GravityLoadPath.Key(i.Id, l2.Id)].Load.Live, Tol);
+            Assert.AreEqual(4 * 60, r[GravityLoadPath.Key(n.Id, l2.Id)].Load.Live, Tol);
+        }
+
+        /// <summary>
+        /// A corridor zone along the S wall, y 0 to 3 over the whole length, L 100 (D 15): the S wall's strip y 0 to 6 is half in it,
+        /// L 3 × 100 + 3 × 40 = 420; the interior wall's strip (y 6 to 16) does not reach it: L 400, no zone.
+        /// </summary>
+        [TestMethod]
+        public void Zone_PartOfTheStrip()
+        {
+            var b = OneStory(out var l2, out var s, out var i, out _, out _);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 15, Live = 40 });
+            LoadSection.SetZones(b, new[] { new LoadZone { LevelId = l2.Id, Name = "Corridor", X0 = 0, Y0 = 0, X1 = 30, Y1 = 3, Load = new AreaLoad { Dead = 15, Live = 100 } } });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.AreEqual(420, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Live, Tol);
+            Assert.AreEqual(90, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Dead, Tol);
+            Assert.AreEqual(400, r[GravityLoadPath.Key(i.Id, l2.Id)].Load.Live, Tol);
+            Assert.AreEqual(0, r[GravityLoadPath.Key(i.Id, l2.Id)].Zones.Count);
+        }
+
+        /// <summary>
+        /// A wall whose first sample point is within 0.01 ft of a zone's edge (the deck ends at x = 10, the wall runs from x = 9.87, so its first sample point is at 9.994) only touches it:
+        /// it takes the level's L 40 × 10 = 400, not the deck's 600.
+        /// </summary>
+        [TestMethod]
+        public void Zone_OnlyTouched_IsNotTaken()
+        {
+            var b = OneStory(out var l2, out _, out var i, out _, out _);
+            b.Walls.Remove(i);
+            var j = b.AddWall(b.Ground, l2, 9.87, 12, 30, 12);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Live = 40 });
+            LoadSection.SetZones(b, new[] { new LoadZone { LevelId = l2.Id, Name = "Deck", X0 = 0, Y0 = 0, X1 = 10, Y1 = 20, Load = new AreaLoad { Live = 60 } } });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b))[GravityLoadPath.Key(j.Id, l2.Id)];
+            Assert.AreEqual(400, r.Load.Live, Tol);
+            Assert.AreEqual(0, r.Zones.Count);
+        }
+
+        [TestMethod]
+        public void Zones_SetRoundTripAndClear()
+        {
+            var b = OneStory(out var l2, out _, out _, out _, out _);
+            var z = new LoadZone { LevelId = l2.Id, Name = " Deck ", X0 = 10, Y0 = 8, X1 = 2, Y1 = 1, Load = new AreaLoad { Live = 60, Dead = -5 } };
+            Assert.IsTrue(LoadSection.SetZones(b, new[] { z, new LoadZone { LevelId = "nope", X1 = 1, Y1 = 1 }, new LoadZone { LevelId = l2.Id, X0 = 1, X1 = 1, Y1 = 1 } }));
+            var back = LoadSection.Read(ModelFile.FromJson(ModelFile.ToJson(new ModelDocument { Building = b })).Building);
+            var only = back.Zones.Single();                               // the other two: no such level, no area
+            Assert.AreEqual("Deck", only.Name);
+            Assert.AreEqual(2, only.X0, Tol);
+            Assert.AreEqual(10, only.X1, Tol);
+            Assert.AreEqual(0, only.Load.Dead, Tol);
+            Assert.AreEqual(60, only.Load.Live, Tol);
+            Assert.IsFalse(LoadSection.SetZones(b, new[] { z }));         // the same again
+            Assert.IsTrue(LoadSection.SetZones(b, null));
+            Assert.IsNull(b.GetData(LoadSection.Key));
+        }
+
         [TestMethod]
         public void Effective_HandEnteredWins()
         {

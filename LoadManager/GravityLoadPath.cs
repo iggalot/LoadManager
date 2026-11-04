@@ -41,6 +41,8 @@ namespace LoadManager
         public double TributaryMax { get; set; }
         /// <summary>The walls standing on it ("W7").</summary>
         public List<string> Above { get; } = new List<string>();
+        /// <summary>The load zones its tributary strip reaches ("Deck").</summary>
+        public List<string> Zones { get; } = new List<string>();
         /// <summary>Beam ends and columns landing on it, here or on a wall above that stands on it (each needs a post).</summary>
         public List<ConcentratedLoad> Points { get; } = new List<ConcentratedLoad>();
         public List<string> Notes { get; } = new List<string>();
@@ -51,6 +53,7 @@ namespace LoadManager
             string t = TributaryMax <= 0 ? "no floor or roof bears on it" :
                 Math.Abs(TributaryMax - TributaryMin) < 0.005 ? $"tributary {TributaryMax:0.##} ft" : $"tributary {TributaryMin:0.##} to {TributaryMax:0.##} ft";
             return t + (Above.Count > 0 ? "; plus the wall" + (Above.Count > 1 ? "s" : "") + " above " + string.Join(", ", Above) : "")
+                     + (Zones.Count > 0 ? "; load zone" + (Zones.Count > 1 ? "s " : " ") + string.Join(", ", Zones) : "")
                      + (Points.Count > 0 ? $"; {Points.Count} concentrated load{(Points.Count > 1 ? "s" : "")}" : "");
         }
     }
@@ -75,6 +78,8 @@ namespace LoadManager
         public LineLoad FromLevel { get; set; } = new LineLoad();
         public double TributaryMin { get; set; }
         public double TributaryMax { get; set; }
+        /// <summary>The load zones its tributary strip reaches.</summary>
+        public List<string> Zones { get; } = new List<string>();
         /// <summary>Walls standing on it.</summary>
         public List<PartialLoad> Partials { get; } = new List<PartialLoad>();
         /// <summary>Beams framing into it and columns standing on it.</summary>
@@ -195,6 +200,7 @@ namespace LoadManager
             foreach (var lv in levels)
             {
                 var area = s.Level(lv.Id) ?? new AreaLoad();
+                var zones = s.ZonesOn(lv.Id).ToList();
                 var plates = Plates(b, lv, roof);
                 var bearing = b.Walls.Where(w => w.Direction != WallDirection.NotOrthogonal && b.LevelsAlong(w).Any(x => x.Id == lv.Id)).ToList();
                 var beams = b.Beams.Where(m => m.LevelId == lv.Id).ToList();
@@ -263,9 +269,10 @@ namespace LoadManager
                     if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
                     else
                     {
-                        var (lo, hi, edge) = TributaryAll(me, plates, lines);
+                        var (lo, hi, edge, load, met) = TributaryAll(me, plates, lines, area, zones);
                         r.TributaryMax = hi; r.TributaryMin = lo;
-                        r.FromLevel = area.Times(hi);
+                        r.FromLevel = load;
+                        r.Zones.AddRange(met);
                         if (edge > Bearing) r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge ({edge:0.##} ft) is all on this beam.");
                     }
                     // walls standing on it (their concentrated loads came as landings, above)
@@ -293,10 +300,11 @@ namespace LoadManager
                 {
                     var me = lines.First(l => !l.IsBeam && l.Id == w.Id);
                     var r = new WallTopLoad { WallId = w.Id, LevelId = lv.Id };
-                    var (lo, hi, edge) = TributaryAll(me, plates, lines);
+                    var (lo, hi, edge, load, met) = TributaryAll(me, plates, lines, area, zones);
                     r.TributaryMax = hi;
                     r.TributaryMin = lo;
-                    r.FromLevel = area.Times(hi);
+                    r.FromLevel = load;
+                    r.Zones.AddRange(met);
                     if (edge > Bearing)
                         r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge of the {(lv == roof ? "roof" : "floor")} ({edge:0.##} ft past any eave) is all on this wall — a cantilever, or a support not drawn.");
 
@@ -422,28 +430,66 @@ namespace LoadManager
             return list;
         }
 
-        /// <summary>The tributary width on a bearing line from every plate on the level, and the most to an edge past any eave.</summary>
-        private static (double lo, double hi, double edge) TributaryAll(Line me, List<Plate> plates, List<Line> lines)
+        /// <summary>
+        /// The tributary width on a bearing line from every plate on the level, the most to an edge past any eave, the most line
+        /// load (each kind, along the line: the area loads across the tributary strip, a zone's in its part) and the zones met.
+        /// </summary>
+        private static (double lo, double hi, double edge, LineLoad load, List<string> zones) TributaryAll(Line me, List<Plate> plates, List<Line> lines, AreaLoad area, List<LoadZone> zones)
         {
             double tMin = double.MaxValue, tMax = 0, edgeMax = 0;
+            var most = new LineLoad();
+            var met = new List<string>();
             foreach (var p in plates)
             {
-                var (lo, hi, edge) = Tributary(me, p, lines);
+                var (lo, hi, edge, load, z) = Tributary(me, p, lines, area, zones);
                 if (hi <= 0) continue;
                 tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang);
+                most = LineLoad.Max(most, load);
+                met.AddRange(z.Where(x => !met.Contains(x)));
             }
-            return (tMax > 0 ? tMin : 0, tMax, edgeMax);
+            return (tMax > 0 ? tMin : 0, tMax, edgeMax, most, met);
+        }
+
+        /// <summary>
+        /// The line load from a strip across the span (from <paramref name="f"/> to <paramref name="g"/>) at <paramref name="s"/>
+        /// along the line: the level's area loads, a zone's where it covers (the larger of each kind where zones overlap).
+        /// </summary>
+        private static LineLoad Strip(bool alongX, double s, double f, double g, AreaLoad area, List<LoadZone> zones, List<string> met)
+        {
+            var here = zones.Where(z => alongX ? z.Y0 + Tol < s && s < z.Y1 - Tol : z.X0 + Tol < s && s < z.X1 - Tol)          // inside it, not only touching its edge
+                            .Select(z => (z, a: alongX ? z.X0 : z.Y0, b: alongX ? z.X1 : z.Y1))
+                            .Where(x => x.b > f + Tol && x.a < g - Tol).ToList();
+            if (here.Count == 0) return area.Times(g - f);
+            var cuts = new List<double> { f, g };
+            foreach (var x in here) { if (x.a > f && x.a < g) cuts.Add(x.a); if (x.b > f && x.b < g) cuts.Add(x.b); }
+            cuts = cuts.Distinct().OrderBy(c => c).ToList();
+            var sum = new LineLoad();
+            for (int k = 0; k + 1 < cuts.Count; k++)
+            {
+                double m = (cuts[k] + cuts[k + 1]) / 2, len = cuts[k + 1] - cuts[k];
+                var cover = here.Where(x => x.a <= m && m <= x.b).ToList();
+                AreaLoad q = area;
+                if (cover.Count > 0)
+                {
+                    q = new AreaLoad { Dead = cover.Max(x => x.z.Load.Dead), Live = cover.Max(x => x.z.Load.Live), RoofLive = cover.Max(x => x.z.Load.RoofLive), Snow = cover.Max(x => x.z.Load.Snow) };
+                    foreach (var x in cover) if (!met.Contains(x.z.Name)) met.Add(x.z.Name);
+                }
+                sum += q.Times(len);
+            }
+            return sum;
         }
 
         /// <summary>
         /// The tributary width of a plate's framing on a bearing line (ft): the least and the most along it, and the most taken to
         /// an edge with no support (0, 0 when the framing runs along the line or the plate does not reach it).
         /// </summary>
-        private static (double lo, double hi, double edge) Tributary(Line w, Plate p, List<Line> all)
+        private static (double lo, double hi, double edge, LineLoad load, List<string> zones) Tributary(Line w, Plate p, List<Line> all, AreaLoad area, List<LoadZone> zones)
         {
+            var most = new LineLoad();
+            var met = new List<string>();
             // joists running W-E bear on S-N lines, and the other way round
             bool alongX = p.Span == SpanDirection.WestEast;
-            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0);
+            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0, most, met);
             double c0 = alongX ? w.Start.X : w.Start.Y;                                   // the line's position across the span
             double s0 = alongX ? Math.Min(w.Start.Y, w.End.Y) : Math.Min(w.Start.X, w.End.X);
             double s1 = alongX ? Math.Max(w.Start.Y, w.End.Y) : Math.Max(w.Start.X, w.End.X);
@@ -470,7 +516,8 @@ namespace LoadManager
                 if (hit.Count == 0) { lo = 0; continue; }
                 double a = hit.Min(m => m.a), bb = hit.Max(m => m.b);
                 any = true;
-                var here = lines.Where(l => l.a - Tol <= s && s <= l.b + Tol && Math.Abs(l.c - c0) > Tol).Select(l => l.c).ToList();
+                // a line within Bearing of this one is the same line (drawn by hand)
+                var here = lines.Where(l => l.a - Tol <= s && s <= l.b + Tol && Math.Abs(l.c - c0) > Bearing).Select(l => l.c).ToList();
                 var below = here.Where(c => c < c0 && c >= a - Tol).DefaultIfEmpty(double.NaN).Max();
                 var above = here.Where(c => c > c0 && c <= bb + Tol).DefaultIfEmpty(double.NaN).Min();
                 double left = double.IsNaN(below) ? c0 - a : (c0 - below) / 2;
@@ -479,8 +526,9 @@ namespace LoadManager
                 if (double.IsNaN(above)) edge = Math.Max(edge, bb - c0);
                 double t = Math.Max(0, left) + Math.Max(0, right);
                 lo = Math.Min(lo, t); hi = Math.Max(hi, t);
+                most = LineLoad.Max(most, Strip(alongX, s, c0 - Math.Max(0, left), c0 + Math.Max(0, right), area, zones, met));
             }
-            return any ? (lo, hi, edge) : (0, 0, 0);
+            return any ? (lo, hi, edge, most, met) : (0, 0, 0, new LineLoad(), new List<string>());
         }
 
         /// <summary>How long two walls run on the same line together (ft); 0 when they are not on one line.</summary>
