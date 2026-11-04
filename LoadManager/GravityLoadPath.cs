@@ -39,6 +39,8 @@ namespace LoadManager
         /// <summary>The tributary width of the level's framing (ft), the least and the most along the wall.</summary>
         public double TributaryMin { get; set; }
         public double TributaryMax { get; set; }
+        /// <summary>The longest span of the framing landing on it (ft): to the next wall or beam across the span (to the edge with none on either side).</summary>
+        public double FramingSpan { get; set; }
         /// <summary>The walls standing on it ("W7").</summary>
         public List<string> Above { get; } = new List<string>();
         /// <summary>The load zones its tributary strip reaches ("Deck").</summary>
@@ -78,6 +80,8 @@ namespace LoadManager
         public LineLoad FromLevel { get; set; } = new LineLoad();
         public double TributaryMin { get; set; }
         public double TributaryMax { get; set; }
+        /// <summary>The longest span of the framing landing on it (ft).</summary>
+        public double FramingSpan { get; set; }
         /// <summary>The load zones its tributary strip reaches.</summary>
         public List<string> Zones { get; } = new List<string>();
         /// <summary>Walls standing on it.</summary>
@@ -186,11 +190,35 @@ namespace LoadManager
             : Math.Abs(a.X - b.X) <= Bearing && Math.Abs(a.Y - b.Y) > Bearing ? WallDirection.SouthNorth
             : WallDirection.NotOrthogonal;
 
-        public static Result Run(Building b, LoadSection s)
+        public static Result Run(Building b, LoadSection s) => Walk(b, s, null);
+
+        /// <summary>
+        /// The uplift pass: the same load path with the dead loads only (the floors' and roof's, the zones', the walls' own weight,
+        /// and those entered by hand) and the wind on the roof (<paramref name="wind"/>, taken across each tributary strip of the
+        /// roof and its eaves) as <see cref="GravityLoad.Wind"/>, carried down alike. Along each wall or beam the place with the
+        /// most net uplift (0.6D + 0.6W, <see cref="GravityLoad.Net"/>) is kept, its dead and wind together.
+        /// </summary>
+        public static Result Uplift(Building b, LoadSection s, RoofWindCase wind)
+        {
+            s = s ?? new LoadSection();
+            LineLoad DeadOnly(LineLoad x) => x == null ? null : new LineLoad { Dead = x.Dead };
+            var dead = new LoadSection
+            {
+                WallDead = s.WallDead,
+                Levels = s.Levels?.ToDictionary(k => k.Key, k => new AreaLoad { Dead = k.Value?.Dead ?? 0 }),
+                Zones = s.Zones?.Select(z => new LoadZone { LevelId = z.LevelId, Name = z.Name, X0 = z.X0, Y0 = z.Y0, X1 = z.X1, Y1 = z.Y1, Load = new AreaLoad { Dead = z.Load?.Dead ?? 0 } }).ToList(),
+                WallTops = s.WallTops?.ToDictionary(k => k.Key, k => k.Value?.ToDictionary(v => v.Key, v => DeadOnly(v.Value))),
+            };
+            return Walk(b, dead, wind ?? new RoofWindCase { Name = "no wind", PressureAt = (x, y) => 0 });
+        }
+
+        private static Result Walk(Building b, LoadSection s, RoofWindCase wind)
         {
             var result = new Result();
             if (b == null) return result;
             s = s ?? new LoadSection();
+            // the most along a line: each kind's largest, or in the uplift pass the place with the most net uplift
+            LineLoad Most(LineLoad x, LineLoad y) => wind == null ? LineLoad.Max(x, y) : LineLoad.MoreUplift(x, y);
             var levels = b.LevelsBottomUp.Where(l => l.Elevation > 0).OrderByDescending(l => l.Elevation).ToList();
             var roof = b.RoofLevel();
             ColumnLoad Col(string id) => result.Columns.TryGetValue(id, out var c) ? c : result.Columns[id] = new ColumnLoad { ColumnId = id };
@@ -201,7 +229,7 @@ namespace LoadManager
             {
                 var area = s.Level(lv.Id) ?? new AreaLoad();
                 var zones = s.ZonesOn(lv.Id).ToList();
-                var plates = Plates(b, lv, roof);
+                var plates = Plates(b, lv, roof, wind);
                 var bearing = b.Walls.Where(w => w.Direction != WallDirection.NotOrthogonal && b.LevelsAlong(w).Any(x => x.Id == lv.Id)).ToList();
                 var beams = b.Beams.Where(m => m.LevelId == lv.Id).ToList();
                 // the columns under this level: base below it, top at or above it
@@ -269,8 +297,8 @@ namespace LoadManager
                     if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
                     else
                     {
-                        var (lo, hi, edge, load, met) = TributaryAll(me, plates, lines, area, zones);
-                        r.TributaryMax = hi; r.TributaryMin = lo;
+                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most);
+                        r.TributaryMax = hi; r.TributaryMin = lo; r.FramingSpan = span;
                         r.FromLevel = load;
                         r.Zones.AddRange(met);
                         if (edge > Bearing) r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge ({edge:0.##} ft) is all on this beam.");
@@ -300,8 +328,9 @@ namespace LoadManager
                 {
                     var me = lines.First(l => !l.IsBeam && l.Id == w.Id);
                     var r = new WallTopLoad { WallId = w.Id, LevelId = lv.Id };
-                    var (lo, hi, edge, load, met) = TributaryAll(me, plates, lines, area, zones);
+                    var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most);
                     r.TributaryMax = hi;
+                    r.FramingSpan = span;
                     r.TributaryMin = lo;
                     r.FromLevel = load;
                     r.Zones.AddRange(met);
@@ -325,7 +354,7 @@ namespace LoadManager
                         {
                             var aUp = b.LevelsAlong(a).FirstOrDefault();
                             if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
-                            r.FromAbove = LineLoad.Max(r.FromAbove, ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) });
+                            r.FromAbove = Most(r.Above.Count == 0 ? null : r.FromAbove, ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) });
                             r.Above.Add(a.Id);
                         }
                     }
@@ -336,7 +365,7 @@ namespace LoadManager
                     // a load entered by hand replaces the computed one, here and in everything under the wall
                     var entered = s.WallTop(w.Id, lv.Id);
                     r.Entered = entered != null;
-                    r.Load = entered != null ? entered + new LineLoad() : r.Computed;
+                    r.Load = entered != null ? entered + new LineLoad { Wind = r.Computed.Wind } : r.Computed;
                     result[Key(w.Id, lv.Id)] = r;
                 }
 
@@ -407,9 +436,11 @@ namespace LoadManager
             public Region Region;
             public SpanDirection Span;
             public double Overhang;
+            /// <summary>The wind on it (the roof, in the uplift pass), else null.</summary>
+            public RoofWindCase Wind;
         }
 
-        private static List<Plate> Plates(Building b, Level lv, Level roofLevel)
+        private static List<Plate> Plates(Building b, Level lv, Level roofLevel, RoofWindCase wind)
         {
             var list = new List<Plate>();
             bool isRoof = roofLevel != null && lv.Id == roofLevel.Id;
@@ -421,12 +452,12 @@ namespace LoadManager
                 if (plan.IsEmpty) return list;
                 // rafters or trusses run across the ridge
                 var span = b.EffectiveRidge() == RidgeAxis.WestEast ? SpanDirection.SouthNorth : SpanDirection.WestEast;
-                list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o });
+                list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o, Wind = wind });
                 return list;
             }
             var holes = b.OpeningsCutting(lv).SelectMany(x => x.Pieces).ToList();
             foreach (var d in b.Diaphragms.Where(d => d.LevelId == lv.Id && d.Pieces != null && d.Pieces.Count > 0))
-                list.Add(new Plate { Region = Region.Of(d.Pieces.Select(Grow)).Minus(holes), Span = d.EffectiveSpan, Overhang = o });
+                list.Add(new Plate { Region = Region.Of(d.Pieces.Select(Grow)).Minus(holes), Span = d.EffectiveSpan, Overhang = o, Wind = isRoof ? wind : null });
             return list;
         }
 
@@ -434,20 +465,21 @@ namespace LoadManager
         /// The tributary width on a bearing line from every plate on the level, the most to an edge past any eave, the most line
         /// load (each kind, along the line: the area loads across the tributary strip, a zone's in its part) and the zones met.
         /// </summary>
-        private static (double lo, double hi, double edge, LineLoad load, List<string> zones) TributaryAll(Line me, List<Plate> plates, List<Line> lines, AreaLoad area, List<LoadZone> zones)
+        private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) TributaryAll(Line me, List<Plate> plates, List<Line> lines, AreaLoad area, List<LoadZone> zones,
+            Func<LineLoad, LineLoad, LineLoad> pick)
         {
-            double tMin = double.MaxValue, tMax = 0, edgeMax = 0;
-            var most = new LineLoad();
+            double tMin = double.MaxValue, tMax = 0, edgeMax = 0, spanMax = 0;
+            LineLoad most = null;
             var met = new List<string>();
             foreach (var p in plates)
             {
-                var (lo, hi, edge, load, z) = Tributary(me, p, lines, area, zones);
+                var (lo, hi, edge, load, z, span) = Tributary(me, p, lines, area, zones, pick);
                 if (hi <= 0) continue;
-                tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang);
-                most = LineLoad.Max(most, load);
+                tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang); spanMax = Math.Max(spanMax, span);
+                most = pick(most, load);
                 met.AddRange(z.Where(x => !met.Contains(x)));
             }
-            return (tMax > 0 ? tMin : 0, tMax, edgeMax, most, met);
+            return (tMax > 0 ? tMin : 0, tMax, edgeMax, most ?? new LineLoad(), met, spanMax);
         }
 
         /// <summary>
@@ -483,13 +515,14 @@ namespace LoadManager
         /// The tributary width of a plate's framing on a bearing line (ft): the least and the most along it, and the most taken to
         /// an edge with no support (0, 0 when the framing runs along the line or the plate does not reach it).
         /// </summary>
-        private static (double lo, double hi, double edge, LineLoad load, List<string> zones) Tributary(Line w, Plate p, List<Line> all, AreaLoad area, List<LoadZone> zones)
+        private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all, AreaLoad area, List<LoadZone> zones,
+            Func<LineLoad, LineLoad, LineLoad> pick)
         {
-            var most = new LineLoad();
+            LineLoad most = null;
             var met = new List<string>();
             // joists running W-E bear on S-N lines, and the other way round
             bool alongX = p.Span == SpanDirection.WestEast;
-            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0, most, met);
+            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0, new LineLoad(), met, 0);
             double c0 = alongX ? w.Start.X : w.Start.Y;                                   // the line's position across the span
             double s0 = alongX ? Math.Min(w.Start.Y, w.End.Y) : Math.Min(w.Start.X, w.End.X);
             double s1 = alongX ? Math.Max(w.Start.Y, w.End.Y) : Math.Max(w.Start.X, w.End.X);
@@ -500,7 +533,7 @@ namespace LoadManager
                                                : (c: o.Start.Y, a: Math.Min(o.Start.X, o.End.X), b: Math.Max(o.Start.X, o.End.X))).ToList();
             var cells = p.Region.Cells().ToList();
             int n = Math.Max(1, (int)Math.Ceiling((s1 - s0) / Step));
-            double lo = double.MaxValue, hi = 0, edge = 0;
+            double lo = double.MaxValue, hi = 0, edge = 0, span = 0;
             bool any = false;
             for (int i = 0; i < n; i++)
             {
@@ -524,11 +557,34 @@ namespace LoadManager
                 double right = double.IsNaN(above) ? bb - c0 : (above - c0) / 2;
                 if (double.IsNaN(below)) edge = Math.Max(edge, c0 - a);
                 if (double.IsNaN(above)) edge = Math.Max(edge, bb - c0);
+                // the framing landing on it spans to the next line on each side (to the edge where there is none on either)
+                span = Math.Max(span, double.IsNaN(below) && double.IsNaN(above) ? Math.Max(c0 - a, bb - c0)
+                                      : Math.Max(double.IsNaN(below) ? 0 : c0 - below, double.IsNaN(above) ? 0 : above - c0));
                 double t = Math.Max(0, left) + Math.Max(0, right);
                 lo = Math.Min(lo, t); hi = Math.Max(hi, t);
-                most = LineLoad.Max(most, Strip(alongX, s, c0 - Math.Max(0, left), c0 + Math.Max(0, right), area, zones, met));
+                double f = c0 - Math.Max(0, left), g = c0 + Math.Max(0, right);
+                var strip = Strip(alongX, s, f, g, area, zones, met);
+                if (p.Wind != null) strip.Wind += WindAcross(p.Wind, alongX, s, f, g);
+                most = pick(most, strip);
             }
-            return any ? (lo, hi, edge, most, met) : (0, 0, 0, new LineLoad(), new List<string>());
+            return any ? (lo, hi, edge, most ?? new LineLoad(), met, span) : (0, 0, 0, new LineLoad(), new List<string>(), 0);
+        }
+
+        /// <summary>
+        /// The wind across a tributary strip (plf, + down): the pressure taken at points <see cref="Step"/> apart from <paramref name="f"/> to
+        /// <paramref name="g"/> across the span, at <paramref name="s"/> along the line.
+        /// </summary>
+        private static double WindAcross(RoofWindCase wind, bool alongX, double s, double f, double g)
+        {
+            if (wind?.PressureAt == null || g - f <= 0) return 0;
+            int n = Math.Max(1, (int)Math.Ceiling((g - f) / Step));
+            double d = (g - f) / n, sum = 0;
+            for (int k = 0; k < n; k++)
+            {
+                double c = f + (k + 0.5) * d;
+                sum += (alongX ? wind.PressureAt(c, s) : wind.PressureAt(s, c)) * d;
+            }
+            return sum;
         }
 
         /// <summary>How long two walls run on the same line together (ft); 0 when they are not on one line.</summary>

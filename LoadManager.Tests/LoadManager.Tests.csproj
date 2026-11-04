@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LoadManager\LoadManager.csproj" />
+    <ProjectReference Include="..\..\ASCE7-Wind-Load-Calculator\ASCE7Wind.Core\ASCE7Wind.Core.csproj" />
   </ItemGroup>
 
 </Project>

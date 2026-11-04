@@ -13,6 +13,8 @@
   <ItemGroup>
     <!-- only for the project file's data section (Building.GetData / SetData) and the object IDs the loads are on -->
     <ProjectReference Include="..\..\BuildingModel\BuildingModel.Core\BuildingModel.Core.csproj" />
+    <!-- the wind calculator's roof pressures, for the uplift pass of the load path (RoofWind) -->
+    <ProjectReference Include="..\..\ASCE7-Wind-Load-Calculator\ASCE7Wind.Core\ASCE7Wind.Core.csproj" />
     <Reference Include="System.Runtime.Serialization" />
   </ItemGroup>
 

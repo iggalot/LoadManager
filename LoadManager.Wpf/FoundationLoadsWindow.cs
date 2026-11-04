@@ -75,9 +75,9 @@ namespace LoadManager.Wpf
             Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
 
-        private static TextBlock Head(string text) => new TextBlock { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 13, Margin = new Thickness(0, 10, 0, 4) };
+        internal static TextBlock Head(string text) => new TextBlock { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 13, Margin = new Thickness(0, 10, 0, 4) };
 
-        private static Grid Table(string[] heads, IEnumerable<string[]> rows, string name)
+        internal static Grid Table(string[] heads, IEnumerable<string[]> rows, string name)
         {
             var g = new Grid();
             AutomationProperties.SetName(g, name);
@@ -102,7 +102,7 @@ namespace LoadManager.Wpf
         }
 
         /// <summary>W2 before W10: the letters, then the number.</summary>
-        private sealed class IdOrder : IComparer<string>
+        internal sealed class IdOrder : IComparer<string>
         {
             public int Compare(string a, string b)
             {

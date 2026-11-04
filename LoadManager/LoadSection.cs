@@ -8,7 +8,10 @@ using BuildingModel.Model;
 
 namespace LoadManager
 {
-    /// <summary>Gravity loads by kind (service level): dead, floor live, roof live, snow (as ASCE 7 gives it).</summary>
+    /// <summary>
+    /// Loads by kind (service level): dead, floor live, roof live, snow (as ASCE 7 gives it), and the wind on the roof
+    /// (<see cref="Wind"/>: found by the load path's uplift pass, never entered or saved).
+    /// </summary>
     [DataContract]
     public abstract class GravityLoad
     {
@@ -17,13 +20,25 @@ namespace LoadManager
         [DataMember(Order = 3, EmitDefaultValue = false)] public double RoofLive { get; set; }
         [DataMember(Order = 4, EmitDefaultValue = false)] public double Snow { get; set; }
 
-        public bool IsEmpty => !(Dead > 0) && !(Live > 0) && !(RoofLive > 0) && !(Snow > 0);
-        public bool SameAs(GravityLoad o) => o != null && Dead == o.Dead && Live == o.Live && RoofLive == o.RoofLive && Snow == o.Snow;
+        /// <summary>
+        /// The wind on the roof, W, as the wind calculator gives it (ASCE 7 strength level): + down, − up. Only the load path's
+        /// uplift pass (<see cref="GravityLoadPath.Uplift"/>) fills it; it is not saved.
+        /// </summary>
+        public double Wind { get; set; }
 
-        /// <summary>The load of one kind; 0 for a kind a gravity load does not carry (wind, earthquake, rain).</summary>
-        public double Of(LoadType t) => t == LoadType.Dead ? Dead : t == LoadType.Live ? Live : t == LoadType.RoofLive ? RoofLive : t == LoadType.Snow ? Snow : 0;
+        public bool IsEmpty => !(Dead > 0) && !(Live > 0) && !(RoofLive > 0) && !(Snow > 0) && Wind == 0;
+        public bool SameAs(GravityLoad o) => o != null && Dead == o.Dead && Live == o.Live && RoofLive == o.RoofLive && Snow == o.Snow && Wind == o.Wind;
 
-        public override string ToString() => $"D {Dead:0.##}, L {Live:0.##}, Lr {RoofLive:0.##}, S {Snow:0.##}";
+        /// <summary>The load of one kind; 0 for a kind it does not carry (rain, earthquake).</summary>
+        public double Of(LoadType t) => t == LoadType.Dead ? Dead : t == LoadType.Live ? Live : t == LoadType.RoofLive ? RoofLive : t == LoadType.Snow ? Snow : t == LoadType.Wind ? Wind : 0;
+
+        /// <summary>
+        /// 0.6D + 0.6W (ASCE 7-22 2.4 Eq. 7a), the allowable stress combination of wind lifting against dead load: negative is a net
+        /// uplift. (IBC 1605.2's alternative combinations count two-thirds of the dead load against wind: less severe.)
+        /// </summary>
+        public double Net => 0.6 * Dead + 0.6 * Wind;
+
+        public override string ToString() => $"D {Dead:0.##}, L {Live:0.##}, Lr {RoofLive:0.##}, S {Snow:0.##}" + (Wind != 0 ? $", W {Wind:0.##}" : "");
     }
 
     /// <summary>A line load (plf).</summary>
@@ -33,18 +48,25 @@ namespace LoadManager
         public static LineLoad operator +(LineLoad a, LineLoad b) => new LineLoad
         {
             Dead = (a?.Dead ?? 0) + (b?.Dead ?? 0), Live = (a?.Live ?? 0) + (b?.Live ?? 0),
-            RoofLive = (a?.RoofLive ?? 0) + (b?.RoofLive ?? 0), Snow = (a?.Snow ?? 0) + (b?.Snow ?? 0),
+            RoofLive = (a?.RoofLive ?? 0) + (b?.RoofLive ?? 0), Snow = (a?.Snow ?? 0) + (b?.Snow ?? 0), Wind = (a?.Wind ?? 0) + (b?.Wind ?? 0),
         };
 
-        /// <summary>The larger of each kind.</summary>
+        /// <summary>The larger of each kind (of the wind, the more upward).</summary>
         public static LineLoad Max(LineLoad a, LineLoad b) => new LineLoad
         {
             Dead = System.Math.Max(a?.Dead ?? 0, b?.Dead ?? 0), Live = System.Math.Max(a?.Live ?? 0, b?.Live ?? 0),
             RoofLive = System.Math.Max(a?.RoofLive ?? 0, b?.RoofLive ?? 0), Snow = System.Math.Max(a?.Snow ?? 0, b?.Snow ?? 0),
+            Wind = System.Math.Min(a?.Wind ?? 0, b?.Wind ?? 0),
         };
 
+        /// <summary>
+        /// Of two, the one with more net uplift (the lower <see cref="GravityLoad.Net"/>), its dead and wind kept together as they
+        /// act at one place: the uplift pass's "most along the line".
+        /// </summary>
+        public static LineLoad MoreUplift(LineLoad a, LineLoad b) => a == null ? b : b == null ? a : b.Net < a.Net - 1e-9 ? b : a;
+
         /// <summary>The whole load over a length (ft): lb.</summary>
-        public PointLoad Over(double lengthFt) => new PointLoad { Dead = Dead * lengthFt, Live = Live * lengthFt, RoofLive = RoofLive * lengthFt, Snow = Snow * lengthFt };
+        public PointLoad Over(double lengthFt) => new PointLoad { Dead = Dead * lengthFt, Live = Live * lengthFt, RoofLive = RoofLive * lengthFt, Snow = Snow * lengthFt, Wind = Wind * lengthFt };
     }
 
     /// <summary>A concentrated load (lb): a beam's reaction, what a column carries.</summary>
@@ -54,13 +76,13 @@ namespace LoadManager
         public static PointLoad operator +(PointLoad a, PointLoad b) => new PointLoad
         {
             Dead = (a?.Dead ?? 0) + (b?.Dead ?? 0), Live = (a?.Live ?? 0) + (b?.Live ?? 0),
-            RoofLive = (a?.RoofLive ?? 0) + (b?.RoofLive ?? 0), Snow = (a?.Snow ?? 0) + (b?.Snow ?? 0),
+            RoofLive = (a?.RoofLive ?? 0) + (b?.RoofLive ?? 0), Snow = (a?.Snow ?? 0) + (b?.Snow ?? 0), Wind = (a?.Wind ?? 0) + (b?.Wind ?? 0),
         };
 
         /// <summary>Each kind times a factor (a share of a load).</summary>
-        public PointLoad Times(double k) => new PointLoad { Dead = Dead * k, Live = Live * k, RoofLive = RoofLive * k, Snow = Snow * k };
+        public PointLoad Times(double k) => new PointLoad { Dead = Dead * k, Live = Live * k, RoofLive = RoofLive * k, Snow = Snow * k, Wind = Wind * k };
 
-        public override string ToString() => $"D {Dead:0}, L {Live:0}, Lr {RoofLive:0}, S {Snow:0} lb";
+        public override string ToString() => $"D {Dead:0}, L {Live:0}, Lr {RoofLive:0}, S {Snow:0}" + (Wind != 0 ? $", W {Wind:0}" : "") + " lb";
     }
 
     /// <summary>An area load (psf, on the horizontal projection).</summary>
@@ -68,7 +90,7 @@ namespace LoadManager
     public sealed class AreaLoad : GravityLoad
     {
         /// <summary>Over a tributary width (ft): the line load (plf).</summary>
-        public LineLoad Times(double widthFt) => new LineLoad { Dead = Dead * widthFt, Live = Live * widthFt, RoofLive = RoofLive * widthFt, Snow = Snow * widthFt };
+        public LineLoad Times(double widthFt) => new LineLoad { Dead = Dead * widthFt, Live = Live * widthFt, RoofLive = RoofLive * widthFt, Snow = Snow * widthFt, Wind = Wind * widthFt };
     }
 
     /// <summary>
