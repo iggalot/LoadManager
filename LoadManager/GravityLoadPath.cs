@@ -26,12 +26,16 @@ namespace LoadManager
         public string WallId { get; set; }
         /// <summary>The level on top of the story (the one the wall carries).</summary>
         public string LevelId { get; set; }
-        /// <summary>The most along the wall (plf): <see cref="FromLevel"/> + <see cref="FromAbove"/>.</summary>
+        /// <summary>The most along the wall (plf), or the load entered by hand (<see cref="Entered"/>).</summary>
         public LineLoad Load { get; set; } = new LineLoad();
         /// <summary>Its share of the level's floor or roof (plf, the most along the wall).</summary>
         public LineLoad FromLevel { get; set; } = new LineLoad();
         /// <summary>What the wall or walls standing on it bring down, with their own weight (plf, the most along it).</summary>
         public LineLoad FromAbove { get; set; } = new LineLoad();
+        /// <summary>What the load path finds: <see cref="FromLevel"/> + <see cref="FromAbove"/>.</summary>
+        public LineLoad Computed { get; set; } = new LineLoad();
+        /// <summary>True when <see cref="Load"/> is the one entered by hand (it replaces <see cref="Computed"/>, and goes on down from there).</summary>
+        public bool Entered { get; set; }
         /// <summary>The tributary width of the level's framing (ft), the least and the most along the wall.</summary>
         public double TributaryMin { get; set; }
         public double TributaryMax { get; set; }
@@ -83,6 +87,22 @@ namespace LoadManager
         public List<string> Notes { get; } = new List<string>();
     }
 
+    /// <summary>What a wall on the ground or a column puts on the foundation (service level).</summary>
+    public sealed class FoundationLoad
+    {
+        public string Id { get; set; }
+        public bool IsWall { get; set; }
+        /// <summary>A wall's start, a column's place.</summary>
+        public Point2 Where { get; set; }
+        public double Length { get; set; }
+        /// <summary>A wall's line load at its base (plf, the most along it): its top load and its bottom story's own weight.</summary>
+        public LineLoad Line { get; set; } = new LineLoad();
+        /// <summary>The posts in a wall, each down to the foundation.</summary>
+        public List<ConcentratedLoad> Points { get; set; } = new List<ConcentratedLoad>();
+        /// <summary>A column's load (lb).</summary>
+        public PointLoad Point { get; set; } = new PointLoad();
+    }
+
     /// <summary>What a column carries down to its base.</summary>
     public sealed class ColumnLoad
     {
@@ -130,6 +150,8 @@ namespace LoadManager
         {
             public Dictionary<string, BeamLoad> Beams { get; } = new Dictionary<string, BeamLoad>();
             public Dictionary<string, ColumnLoad> Columns { get; } = new Dictionary<string, ColumnLoad>();
+            /// <summary>What reaches the foundation: the walls on the ground and the columns standing on it.</summary>
+            public List<FoundationLoad> Foundation { get; } = new List<FoundationLoad>();
             public List<string> Notes { get; } = new List<string>();
         }
 
@@ -302,7 +324,11 @@ namespace LoadManager
                     foreach (var g in landings.Where(g => g.Target == w.Id))
                         r.Points.Add(new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From });
                     foreach (var p in r.Points) p.At = Along(me, p.Where);
-                    r.Load = r.FromLevel + r.FromAbove;
+                    r.Computed = r.FromLevel + r.FromAbove;
+                    // a load entered by hand replaces the computed one, here and in everything under the wall
+                    var entered = s.WallTop(w.Id, lv.Id);
+                    r.Entered = entered != null;
+                    r.Load = entered != null ? entered + new LineLoad() : r.Computed;
                     result[Key(w.Id, lv.Id)] = r;
                 }
 
@@ -321,6 +347,23 @@ namespace LoadManager
                         result.Notes.Add($"{a.Id} stands on the {lv.Name} framing, not on a wall or beam: its load is not traced down (the floor carries it).");
             }
             foreach (var c in b.Columns.Where(c => Elev(c.BaseLevelId) <= Tol)) Col(c.Id).BaseOn = "the foundation";
+
+            // what reaches the foundation: each wall standing on the ground (its top load and its bottom story's weight, and
+            // the posts in it), each column standing on it
+            foreach (var w in b.Walls.Where(w => Elev(w.BaseLevelId) <= Tol && w.Direction != WallDirection.NotOrthogonal))
+            {
+                var first = b.LevelsAlong(w).FirstOrDefault();
+                if (first == null) continue;
+                result.TryGetValue(Key(w.Id, first.Id), out var top);
+                result.Foundation.Add(new FoundationLoad
+                {
+                    Id = w.Id, IsWall = true, Length = Dist(w.Start, w.End), Where = w.Start,
+                    Line = (top?.Load ?? new LineLoad()) + new LineLoad { Dead = s.WallDead * first.Elevation },
+                    Points = top?.Points.ToList() ?? new List<ConcentratedLoad>(),
+                });
+            }
+            foreach (var c in b.Columns.Where(c => Elev(c.BaseLevelId) <= Tol))
+                result.Foundation.Add(new FoundationLoad { Id = c.Id, Where = c.At, Point = Col(c.Id).Load });
             return result;
         }
 

@@ -131,6 +131,24 @@ namespace LoadManager
         /// </summary>
         public static List<LoadCombination> Asd() => Expand(Asce7AsdRows().Concat(IbcRows()));
 
+        /// <summary>
+        /// The largest total of a gravity load in the combinations whose loads are all on it (dead always counts; those with
+        /// wind, earthquake and so on add nothing vertical here and are left out), e.g. a footing's ASD load. Null when none.
+        /// </summary>
+        public static (LoadCombination combination, double total)? Largest(GravityLoad g, IEnumerable<LoadCombination> combinations = null)
+        {
+            if (g == null) return null;
+            bool On(LoadType t) => t == LoadType.Dead || g.Of(t) > 0;
+            (LoadCombination, double)? best = null;
+            foreach (var c in combinations ?? Asd())
+            {
+                if (!c.Types.All(On)) continue;
+                double v = c.Types.Sum(t => c.Factor(t) * g.Of(t));
+                if (best == null || v > best.Value.Item2 + 1e-9) best = (c, v);
+            }
+            return best;
+        }
+
         private static IEnumerable<(string eq, LoadTerm[] terms)> IbcRows()
         {
             const string I = "IBC Eq. ";

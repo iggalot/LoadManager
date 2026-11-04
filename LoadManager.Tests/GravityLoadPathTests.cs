@@ -277,6 +277,21 @@ namespace LoadManager.Tests
             Assert.AreEqual(200, rs.Load.Live, Tol);
             Assert.AreEqual(200, rs.Load.RoofLive, Tol);
             Assert.IsFalse(r.Notes.Any(x => x.StartsWith(i.Id)));       // it stands on the beam
+
+            // the foundation: S1 brings its top load and its own weight (10 psf × 10 ft): D 350, L 200, Lr 200 plf; the most in
+            // ASD is D + L + Lr (IBC 16-1) = 750 plf (ASCE 4a: 350 + 150 + 150 = 650). C1: 2500 + 6000 + 1000 = 9500 lb.
+            var fs = r.Foundation.Single(x => x.Id == s1.Id);
+            Assert.IsTrue(fs.IsWall);
+            Assert.AreEqual(350, fs.Line.Dead, Tol);
+            Assert.AreEqual(200, fs.Line.Live, Tol);
+            var most = LoadCombinations.Largest(fs.Line).Value;
+            Assert.AreEqual("D + L + Lr", most.combination.Name);
+            Assert.AreEqual(750, most.total, Tol);
+            var fc = r.Foundation.Single(x => x.Id == c1.Id);
+            Assert.IsFalse(fc.IsWall);
+            Assert.AreEqual(9500, LoadCombinations.Largest(fc.Point).Value.total, Tol);
+            Assert.AreEqual(2, r.Foundation.Count(x => x.IsWall));     // S1 and N1 on the ground
+            Assert.AreEqual(2, r.Foundation.Count(x => !x.IsWall));    // C1 and C2
         }
 
         /// <summary>
@@ -363,6 +378,36 @@ namespace LoadManager.Tests
             Assert.IsTrue(below[0].From.StartsWith(bm.Id + " via "));
         }
 
+        /// <summary>
+        /// A load entered by hand on the upper S wall (D 1000 plf) goes on down: the S wall under it takes 5 ft of floor
+        /// (D 10 → 50) plus 1000 and the upper wall's weight (10 psf × 10 ft = 100): D 1150; at the foundation plus its own 100: D 1250.
+        /// </summary>
+        [TestMethod]
+        public void HandEnteredLoad_GoesOnDown()
+        {
+            var b = Building.New("Entered");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            var s1 = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
+            b.AddBeam(l2, 0, 10, 30, 10);
+            var s2 = b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
+            LoadSection.SetWallDead(b, 10);
+            LoadSection.SetWallTop(b, s2.Id, rf.Id, new LineLoad { Dead = 1000 });
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.IsTrue(r[GravityLoadPath.Key(s2.Id, rf.Id)].Entered);
+            var rs = r[GravityLoadPath.Key(s1.Id, l2.Id)];
+            Assert.IsFalse(rs.Entered);
+            Assert.AreEqual(1150, rs.Load.Dead, Tol);
+            Assert.AreEqual(1250, r.Foundation.Single(f => f.Id == s1.Id).Line.Dead, Tol);
+        }
+
         [TestMethod]
         public void Effective_HandEnteredWins()
         {
@@ -373,7 +418,9 @@ namespace LoadManager.Tests
             Assert.AreSame(c.Load, e);
             LoadSection.SetWallTop(b, s.Id, l2.Id, new LineLoad { Dead = 500 });
             Assert.AreEqual(500, GravityLoadPath.Effective(b, LoadSection.Read(b), s.Id, l2.Id, out c).Dead, Tol);
-            Assert.AreEqual(90, c.Load.Dead, Tol);                     // still worked out, for comparison
+            Assert.AreEqual(90, c.Computed.Dead, Tol);                 // still worked out, for comparison
+            Assert.IsTrue(c.Entered);
+            Assert.AreEqual(500, c.Load.Dead, Tol);
         }
 
         [TestMethod]
