@@ -8,16 +8,19 @@ namespace LoadManager
 {
     /// <summary>
     /// One wind case on the roof: the pressure at each point of the plan (psf, + down, − up), as the wind calculator gives it,
-    /// with the internal pressure that lifts the roof most. The uplift pass of the load path (<see cref="GravityLoadPath.Uplift"/>)
+    /// with that case's internal pressure (the cladding case: the internal pressure that lifts the roof most). The uplift pass of the load path (<see cref="GravityLoadPath.Uplift"/>)
     /// takes it across each tributary strip of the roof.
     /// </summary>
     public sealed class RoofWindCase
     {
-        /// <summary>"Wind from the west, roof Cp giving the larger uplift".</summary>
+        /// <summary>The wind calculator's case name ("Case 1, from W, roof Case A, +GCpi"), or the cladding case's.</summary>
         public string Name { get; set; }
 
         /// <summary>Where the pressures come from (the edition, figure and section).</summary>
         public string Source { get; set; }
+
+        /// <summary>The side the wind comes from, as the calculator's case has it: "W", "E", "S", "N", "SW", ... (null: any, e.g. the cladding case).</summary>
+        public string From { get; set; }
 
         /// <summary>The pressure (psf) at a plan point (ft, the model's x east and y north): + down, − up.</summary>
         public Func<double, double, double> PressureAt { get; set; }
@@ -26,10 +29,9 @@ namespace LoadManager
     }
 
     /// <summary>
-    /// The wind calculator's roof pressures as <see cref="RoofWindCase"/>s on the model's plan. The calculator lays its zones out
-    /// on the building's enclosing rectangle (L west to east, B south to north, from its south-west corner), the wind from the
-    /// west along L and from the south along B (that one analysed on the building turned 90°); wind from the east and from the
-    /// north are those mirrored. The roof's eaves (<see cref="BuildingModel.Model.Roof.Overhang"/>) carry the pressure on top of
+    /// The wind calculator's roof pressures as <see cref="RoofWindCase"/>s on the model's plan: its own wind cases as it made them
+    /// (<see cref="Cases"/>), and the components and cladding suction. The calculator lays its zones out on the building's
+    /// enclosing rectangle (L west to east, B south to north, from its south-west corner). The roof's eaves (<see cref="BuildingModel.Model.Roof.Overhang"/>) carry the pressure on top of
     /// the zone they come out of, without internal pressure (the soffit is outside), and the windward eave also the pressure
     /// up on its soffit (ASCE 7 27.3.3: Cp 0.8; for components and cladding the figures' overhang coefficients, which include both faces).
     /// </summary>
@@ -43,35 +45,49 @@ namespace LoadManager
         }
 
         /// <summary>
-        /// The whole-building (MWFRS) cases: the wind from each of the four sides, each with both roof coefficients of Fig. 27.3-1
-        /// (the one giving the larger suction and the other one ASCE 7 requires): eight cases. Empty when a calculator is missing.
+        /// The whole-building (MWFRS) wind on the roof: one case for each of the wind calculator's own wind cases
+        /// (<see cref="WindCases.For"/>), in its order and under its name, each with that case's own roof zones and its own sign
+        /// of the internal pressure (net = external − internal, as the case has them). Nothing is chosen, paired or built here.
+        /// The eaves: the top takes the external pressure of the zone it comes out of (the soffit is outside, no internal
+        /// pressure); a windward eave of the case's wind also the pressure up on its soffit (the case's: 27.3.3 Cp 0.8, or 28.3.3
+        /// GCp 0.7). A case without roof zones (the 16/8 psf minimum: its 8 psf is horizontal, on the roof's projection) puts
+        /// no pressure on the roof.
         /// </summary>
-        /// <param name="box">The building's enclosing rectangle (the model's envelope, the one the wind calculation was given).</param>
-        public static List<RoofWindCase> Mwfrs(Rect2 box, WindLoadCalculator_Base alongLength, WindLoadCalculator_Base alongWidth)
+        /// <param name="box">The building's enclosing rectangle (the model's envelope, the one the wind calculation was given);
+        /// the calculator's plan runs from its south-west corner, x east along the length, y north.</param>
+        public static List<RoofWindCase> Cases(Rect2 box, IEnumerable<ASCE7WindLoadCalculator.WindCase> cases, string edition = null)
         {
             var list = new List<RoofWindCase>();
-            foreach (var (calc, sides) in new[] { (alongLength, new[] { "west", "east" }), (alongWidth, new[] { "south", "north" }) })
+            // cases with the same zone outlines (the ±GCpi pair, the two torsions, ...) share one locator, so which zone a point
+            // is in is found once for all of them; each case keeps its own pressures
+            var locators = new Dictionary<string, Locator>();
+            foreach (var c in cases ?? Enumerable.Empty<ASCE7WindLoadCalculator.WindCase>())
             {
-                if (calc?.RoofAreaCalculator == null) continue;
-                bool alongB = calc == alongWidth;
-                double soffit = (calc as WindLoadCalculator_MWFRS)?.OverhangBottomPressure ?? 0;
-                foreach (var (neg, caseName) in new[] { (true, "roof Cp giving the larger uplift"), (false, "the other roof Cp") })
-                {
-                    var pressures = neg ? calc.windPressureRoof_Neg_External : calc.windPressureRoof_Pos_External;
-                    foreach (var side in sides)
+                var zones = c.Zones.Where(z => z.Kind == SurfaceKind.Roof && z.Outline != null && z.Outline.Count >= 3)
+                    .Select(z => new Zone
                     {
-                        bool mirror = side == "east" || side == "north";
-                        var zones = Zones(calc, pressures, box, alongB, mirror, top: p => p.ExternalPressure);
-                        if (zones.Count == 0) continue;
-                        list.Add(new RoofWindCase
-                        {
-                            Name = $"Wind from the {side}, {caseName}",
-                            Source = $"{calc.Edition?.Name ?? "ASCE 7"} Fig. 27.3-1 (MWFRS, directional), with internal pressure ±GCpi {calc.GetGCpi():0.00} taken to lift the roof; " +
-                                     $"windward eave soffit Cp 0.8 (27.3.3), {soffit:0.0} psf up",
-                            PressureAt = Field(box, zones, side, soffit),
-                        });
-                    }
-                }
+                        Outline = z.Outline.Select(p => new Point2(box.X0 + p.X, box.Y0 + p.Y)).ToList(),
+                        Net = z.NetPsf, Top = z.ExternalPsf, Label = z.Label,
+                    }).ToList();
+                string layout = string.Join(";", zones.Select(z => string.Join(" ", z.Outline.Select(p => FormattableString.Invariant($"{p.X:R},{p.Y:R}")))));
+                if (zones.Count > 0 && !locators.ContainsKey(layout)) locators[layout] = new Locator(zones.Select(z => z.Outline).ToList());
+                string from = c.From ?? "";
+                var soffit = new Dictionary<string, double>
+                {
+                    ["west"] = from.Contains("W") ? c.SoffitPsfAlongLength : 0, ["east"] = from.Contains("E") ? c.SoffitPsfAlongLength : 0,
+                    ["south"] = from.Contains("S") ? c.SoffitPsfAlongWidth : 0, ["north"] = from.Contains("N") ? c.SoffitPsfAlongWidth : 0,
+                };
+                string chapter = c.Procedure == LateralProcedure.Envelope ? "Ch. 28 (envelope)" : "Ch. 27 (directional)";
+                list.Add(new RoofWindCase
+                {
+                    Name = c.Name,
+                    From = c.From,
+                    Source = c.IsMinimumCase
+                        ? $"{edition ?? "ASCE 7"} the wind calculator's separate minimum case: 8 psf horizontal on the roof's projection, no pressure on the roof itself"
+                        : $"{edition ?? "ASCE 7"} {chapter}, the wind calculator's case \"{c.Name}\": its own roof zones and internal pressure ({(c.InternalSign > 0 ? "+" : c.InternalSign < 0 ? "−" : "")}GCpi); " +
+                          $"windward eave soffit {Math.Max(c.SoffitPsfAlongLength, c.SoffitPsfAlongWidth):0.0} psf up ({(c.Procedure == LateralProcedure.Envelope ? "28.3.3" : "27.3.3")})",
+                    PressureAt = zones.Count == 0 ? (Func<double, double, double>)((x, y) => 0) : Field(box, zones, soffit, locators[layout]),
+                });
             }
             return list;
         }
@@ -126,7 +142,7 @@ namespace LoadManager
                 Name = $"Components and cladding, roof suction at {area:0} sq ft",
                 Source = $"{cc.Edition?.Name ?? "ASCE 7"} Ch. 30 Part 1 roof zones 1 to 3 (C&C) at an effective wind area of {area:0} sq ft (26.2), " +
                          $"with internal pressure ±GCpi {cc.GetGCpi():0.00} and the {WindLoadCalculator_CC.MinimumNetPressure:0} psf minimum (30.2.2); eaves at the overhang coefficients",
-                PressureAt = Field(box, zones, null, 0),
+                PressureAt = Field(box, zones, null),
             };
         }
 
@@ -171,16 +187,63 @@ namespace LoadManager
         /// The pressure at a plan point: in the zone it is in (on a border, the nearest); past the building's rectangle (on an eave)
         /// the eave-top pressure of the zone it comes out of, less the soffit pressure on the windward side.
         /// </summary>
-        private static Func<double, double, double> Field(Rect2 box, List<Zone> zones, string windward, double soffit) => (x, y) =>
+        /// <param name="soffit">The pressure up on the soffit of each side's eave ("west", "east", "south", "north"; psf): the
+        /// windward ones of the case; null: none.</param>
+        /// <param name="locator">Which zone a point is in (shared by cases with the same outlines); null: one of its own.</param>
+        private static Func<double, double, double> Field(Rect2 box, List<Zone> zones, Dictionary<string, double> soffit, Locator locator = null)
         {
-            double cx = Math.Max(box.X0, Math.Min(box.X1, x)), cy = Math.Max(box.Y0, Math.Min(box.Y1, y));
-            bool eave = Math.Abs(cx - x) > 1e-9 || Math.Abs(cy - y) > 1e-9;
-            var at = new Point2(cx, cy);
-            var z = zones.FirstOrDefault(q => Inside(q.Outline, at)) ?? zones.OrderBy(q => DistanceTo(q.Outline, at)).First();
-            if (!eave) return z.Net;
-            bool upwind = windward == "west" ? x < box.X0 : windward == "east" ? x > box.X1 : windward == "south" ? y < box.Y0 : windward == "north" && y > box.Y1;
-            return z.Top - (upwind ? soffit : 0);
-        };
+            var at = locator ?? new Locator(zones.Select(z => z.Outline).ToList());
+            var net = zones.Select(z => z.Net).ToArray();
+            var top = zones.Select(z => z.Top).ToArray();
+            double Up(string side) => soffit != null && soffit.TryGetValue(side, out var s) ? s : 0;
+            double west = Up("west"), east = Up("east"), south = Up("south"), north = Up("north");
+            return (x, y) =>
+            {
+                double cx = Math.Max(box.X0, Math.Min(box.X1, x)), cy = Math.Max(box.Y0, Math.Min(box.Y1, y));
+                bool eave = Math.Abs(cx - x) > 1e-9 || Math.Abs(cy - y) > 1e-9;
+                int i = at.Find(cx, cy);
+                if (!eave) return net[i];
+                double up = x < box.X0 ? west : x > box.X1 ? east : y < box.Y0 ? south : north;
+                return top[i] - up;
+            };
+        }
+
+        /// <summary>
+        /// Which of a set of zone outlines a plan point is in: the first that holds it, else (on a border) the nearest. Each point
+        /// is found once and remembered (the load path asks for the same points in every case); safe to use from several threads.
+        /// </summary>
+        private sealed class Locator
+        {
+            private readonly List<Point2>[] outlines;
+            private readonly Rect2[] bounds;
+            private readonly System.Collections.Concurrent.ConcurrentDictionary<(double, double), int> found =
+                new System.Collections.Concurrent.ConcurrentDictionary<(double, double), int>();
+
+            public Locator(List<List<Point2>> outlines)
+            {
+                this.outlines = outlines.ToArray();
+                bounds = this.outlines.Select(o => new Rect2(o.Min(p => p.X), o.Min(p => p.Y), o.Max(p => p.X), o.Max(p => p.Y))).ToArray();
+            }
+
+            public int Find(double x, double y) => found.GetOrAdd((x, y), k => Search(k.Item1, k.Item2));
+
+            private int Search(double x, double y)
+            {
+                var p = new Point2(x, y);
+                for (int i = 0; i < outlines.Length; i++)
+                {
+                    var b = bounds[i];
+                    if (x >= b.X0 && x <= b.X1 && y >= b.Y0 && y <= b.Y1 && Inside(outlines[i], p)) return i;
+                }
+                int best = 0; double d = double.MaxValue;
+                for (int i = 0; i < outlines.Length; i++)
+                {
+                    double di = DistanceTo(outlines[i], p);
+                    if (di < d) { d = di; best = i; }
+                }
+                return best;
+            }
+        }
 
         private static bool Inside(List<Point2> poly, Point2 p)
         {

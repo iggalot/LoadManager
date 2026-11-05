@@ -28,6 +28,11 @@ namespace LoadManager
         public double WindMin { get; set; }
         /// <summary>The wind pressing down most (the highest).</summary>
         public double WindMax { get; set; }
+        /// <summary>The wind in each wind case (<see cref="WindCase.Name"/>; + down): a combination with W takes one case at a time.</summary>
+        public Dictionary<string, double> Winds { get; set; } = new Dictionary<string, double>();
+
+        /// <summary>The wind in one case (0 where it has none here).</summary>
+        public double Wind(string windCase) => windCase != null && Winds != null && Winds.TryGetValue(windCase, out var v) ? v : 0;
 
         public double Of(LoadType t) => t == LoadType.Dead ? Dead : t == LoadType.Live ? Live : t == LoadType.RoofLive ? RoofLive : t == LoadType.Snow ? Snow : 0;
 
@@ -39,14 +44,23 @@ namespace LoadManager
         /// The most the combination gives (down): the dead load at its factor, each variable load where it adds to it or else set to
         /// zero ("each load combination shall be investigated with one or more of the variable loads set to zero").
         /// </summary>
-        public double Most(LoadCombination c) => c.Terms.Sum(t => Term(t, true));
+        public double Most(LoadCombination c) => c.Terms.Sum(t => Term(t, true, null));
 
         /// <summary>The least (the most uplift): the dead load at its factor, each variable load where it takes away or else zero.</summary>
-        public double Least(LoadCombination c) => c.Terms.Sum(t => Term(t, false));
+        public double Least(LoadCombination c) => c.Terms.Sum(t => Term(t, false, null));
 
-        private double Term(LoadTerm t, bool most)
+        /// <summary>
+        /// The most in one case: with W, the wind of that one wind case, as it is (+ or −, the same case everywhere); the gravity
+        /// variable loads each in or set to zero, whichever is worse.
+        /// </summary>
+        public double Most(FoundationCase c) => c.Combination.Terms.Sum(t => Term(t, true, c.Wind?.Name));
+
+        public double Least(FoundationCase c) => c.Combination.Terms.Sum(t => Term(t, false, c.Wind?.Name));
+
+        private double Term(LoadTerm t, bool most, string windCase)
         {
             if (t.Type == LoadType.Dead) return t.Factor * Dead;
+            if (t.Type == LoadType.Wind && windCase != null) return t.Factor * Wind(windCase);
             double lo, hi;
             if (t.Type == LoadType.Wind) { lo = Math.Min(0, WindMin); hi = Math.Max(0, WindMax); }
             else { double v = Of(t.Type); lo = Math.Min(0, v); hi = Math.Max(0, v); }
@@ -58,24 +72,65 @@ namespace LoadManager
 
         public ServiceLoad WithWind(double min, double max) => new ServiceLoad { Dead = Dead, Live = Live, RoofLive = RoofLive, Snow = Snow, WindMin = min, WindMax = max };
 
+        /// <summary>With the wind of each wind case (its range set from them).</summary>
+        public ServiceLoad WithWinds(Dictionary<string, double> winds)
+        {
+            var w = winds ?? new Dictionary<string, double>();
+            return new ServiceLoad
+            {
+                Dead = Dead, Live = Live, RoofLive = RoofLive, Snow = Snow, Winds = w,
+                WindMin = w.Count == 0 ? 0 : w.Values.Min(), WindMax = w.Count == 0 ? 0 : w.Values.Max(),
+            };
+        }
+
         public override string ToString() => $"D {Dead:0.##}, L {Live:0.##}, Lr {RoofLive:0.##}, S {Snow:0.##}" + (Has(LoadType.Wind) ? $", W {WindMin:0.##} to {WindMax:0.##}" : "");
+    }
+
+    /// <summary>
+    /// One wind case for the whole building: one of the wind calculator's own cases, with its roof pressures and the shear walls'
+    /// end forces the lateral design saved under the same name.
+    /// </summary>
+    public sealed class WindCase
+    {
+        /// <summary>The wind calculator's case name: "Case 2, from W, roof Case A, +GCpi, torsion +".</summary>
+        public string Name { get; set; }
+        /// <summary>The lateral design's case, the same name (null: none saved for it).</summary>
+        public string Lateral { get; set; }
+        /// <summary>Where it comes from ("W", "SW", ...; null: not known).</summary>
+        public string From { get; set; }
+        /// <summary>The roof wind case's index in <see cref="WindUplift.Runs"/> (−1: none) and its name.</summary>
+        public int Roof { get; set; } = -1;
+        public string RoofName { get; set; }
+        public override string ToString() => Name;
+    }
+
+    /// <summary>A load combination as investigated: the code's combination, and for one with W the one wind case it is taken in.</summary>
+    public sealed class FoundationCase
+    {
+        public LoadCombination Combination { get; set; }
+        /// <summary>The wind case (null: the combination has no W).</summary>
+        public WindCase Wind { get; set; }
+        public string Name => Wind == null ? Combination.Name : $"{Combination.Name} · W: {Wind.Name}";
+        public string Equation => Combination.Equation;
+        public override string ToString() => Name;
     }
 
     /// <summary>One combination's range on a piece of foundation (+ down).</summary>
     public sealed class CombinedLoad
     {
-        public LoadCombination Combination { get; set; }
+        public FoundationCase Case { get; set; }
+        public LoadCombination Combination => Case?.Combination;
         public double Max { get; set; }
         public double Min { get; set; }
     }
 
-    /// <summary>The most down and the most up over every combination, each with the one giving it.</summary>
+    /// <summary>The most down and the most up over every combination (and wind case), each with the one giving it.</summary>
     public sealed class LoadEnvelope
     {
         public double Max { get; set; }
-        public LoadCombination MaxBy { get; set; }
+        public FoundationCase MaxBy { get; set; }
         public double Min { get; set; }
-        public LoadCombination MinBy { get; set; }
+        public FoundationCase MinBy { get; set; }
         public bool Lifts => Min < -1e-9;
 
         public static LoadEnvelope Of(IEnumerable<CombinedLoad> all)
@@ -83,9 +138,9 @@ namespace LoadManager
             LoadEnvelope e = null;
             foreach (var c in all)
             {
-                if (e == null) { e = new LoadEnvelope { Max = c.Max, MaxBy = c.Combination, Min = c.Min, MinBy = c.Combination }; continue; }
-                if (c.Max > e.Max + 1e-9) { e.Max = c.Max; e.MaxBy = c.Combination; }
-                if (c.Min < e.Min - 1e-9) { e.Min = c.Min; e.MinBy = c.Combination; }
+                if (e == null) { e = new LoadEnvelope { Max = c.Max, MaxBy = c.Case, Min = c.Min, MinBy = c.Case }; continue; }
+                if (c.Max > e.Max + 1e-9) { e.Max = c.Max; e.MaxBy = c.Case; }
+                if (c.Min < e.Min - 1e-9) { e.Min = c.Min; e.MinBy = c.Case; }
             }
             return e ?? new LoadEnvelope();
         }
@@ -143,6 +198,8 @@ namespace LoadManager
         /// <summary>The roof wind's range here (+ down), from the whole-building cases.</summary>
         public double RoofWindMin { get; set; }
         public double RoofWindMax { get; set; }
+        /// <summary>The roof wind here in each roof case (by its index in the uplift runs; + down).</summary>
+        public List<double> RoofWinds { get; set; } = new List<double>();
         /// <summary>The lateral design's force here per case (+ down; its hold-down's uplift is negative).</summary>
         public Dictionary<string, double> Lateral { get; } = new Dictionary<string, double>();
         public List<CombinedLoad> Combined { get; } = new List<CombinedLoad>();
@@ -165,18 +222,24 @@ namespace LoadManager
         /// <summary>The whole service load (lb): the line loads × their lengths and the points.</summary>
         public ServiceLoad Total()
         {
+            // the wind case by case (the whole wall's in one case), its range from them
             var t = new ServiceLoad();
+            var winds = new Dictionary<string, double>();
+            void Add(Dictionary<string, double> w, double k)
+            {
+                foreach (var kv in w ?? new Dictionary<string, double>()) { winds.TryGetValue(kv.Key, out var v); winds[kv.Key] = v + kv.Value * k; }
+            }
             foreach (var s in Segments)
             {
                 t.Dead += s.Load.Dead * s.Length; t.Live += s.Load.Live * s.Length; t.RoofLive += s.Load.RoofLive * s.Length; t.Snow += s.Load.Snow * s.Length;
-                t.WindMin += s.Load.WindMin * s.Length; t.WindMax += s.Load.WindMax * s.Length;
+                Add(s.Load.Winds, s.Length);
             }
             foreach (var p in Points)
             {
                 t.Dead += p.Load.Dead; t.Live += p.Load.Live; t.RoofLive += p.Load.RoofLive; t.Snow += p.Load.Snow;
-                t.WindMin += p.Load.WindMin; t.WindMax += p.Load.WindMax;
+                Add(p.Load.Winds, 1);
             }
-            return t;
+            return t.WithWinds(winds);
         }
     }
 
@@ -194,7 +257,15 @@ namespace LoadManager
         public const double Near = 1.0;
 
         public DesignMethod Method { get; private set; }
+        /// <summary>The code's combinations with the loads found here (their factors).</summary>
         public List<LoadCombination> Combinations { get; } = new List<LoadCombination>();
+        /// <summary>The whole building's wind cases: the wind calculator's own, each once (no pairing).</summary>
+        public List<WindCase> WindCases { get; } = new List<WindCase>();
+        /// <summary>
+        /// Every combination as investigated: one with W once for each wind case (the same case everywhere on the foundation),
+        /// one without W once. Each place's <see cref="CombinedLoad"/> lists follow this order.
+        /// </summary>
+        public List<FoundationCase> Cases { get; } = new List<FoundationCase>();
         /// <summary>Combinations left out and why, in a sentence each.</summary>
         public List<string> Skipped { get; } = new List<string>();
         public List<FoundationWall> Walls { get; } = new List<FoundationWall>();
@@ -213,6 +284,9 @@ namespace LoadManager
             r.Notes.AddRange(path.Notes);
             var runs = uplift?.Runs.Select(x => x.Path).ToList() ?? new List<GravityLoadPath.Result>();
             var latPoints = (lateral?.Points ?? new List<LateralPoint>()).Where(p => p.Up != null && p.Up.Count > 0).ToList();
+            var roofCases = uplift?.Runs.Select(x => x.Case).ToList() ?? new List<RoofWindCase>();
+            WindCasesOf(r, roofCases, latPoints.Count == 0 ? null : lateral);
+            var wcs = r.WindCases;
 
             // ---- the walls: the gravity profile cut wherever any wind case's changes
             foreach (var f in path.Foundation.Where(f => f.IsWall))
@@ -229,7 +303,7 @@ namespace LoadManager
                     double m = (cuts[i] + cuts[i + 1]) / 2;
                     var g = ServiceLoad.Of(f.Profile.At(m));
                     var ws = winds.Select(x => x?.Profile.At(m).Wind ?? 0).ToList();
-                    var load = ws.Count == 0 ? g : g.WithWind(ws.Min(), ws.Max());
+                    var load = wcs.Count == 0 ? g : g.WithWinds(wcs.ToDictionary(wc => wc.Name, wc => wc.Roof >= 0 ? ws[wc.Roof] : 0));
                     var last = fw.Segments.LastOrDefault();
                     if (load.IsEmpty) continue;
                     if (last != null && Math.Abs(last.B - cuts[i]) < 1e-4 && Same(last.Load, load)) { last.B = cuts[i + 1]; continue; }
@@ -241,7 +315,7 @@ namespace LoadManager
                     fw.Points.Add(new FoundationPoint
                     {
                         From = c.From, Kind = FoundationPointKind.Post, WallId = f.Id, At = c.At, Where = fw.PointAt(c.At), Load = ServiceLoad.Of(c.Load),
-                        RoofWindMin = ws.Count == 0 ? 0 : ws.Min(), RoofWindMax = ws.Count == 0 ? 0 : ws.Max(),
+                        RoofWindMin = ws.Count == 0 ? 0 : ws.Min(), RoofWindMax = ws.Count == 0 ? 0 : ws.Max(), RoofWinds = ws,
                     });
                 }
                 r.Walls.Add(fw);
@@ -254,7 +328,7 @@ namespace LoadManager
                 var p0 = new FoundationPoint
                 {
                     From = f.Id, Kind = FoundationPointKind.Column, Where = f.Where, Load = ServiceLoad.Of(f.Point),
-                    RoofWindMin = ws.Count == 0 ? 0 : ws.Min(), RoofWindMax = ws.Count == 0 ? 0 : ws.Max(),
+                    RoofWindMin = ws.Count == 0 ? 0 : ws.Min(), RoofWindMax = ws.Count == 0 ? 0 : ws.Max(), RoofWinds = ws,
                 };
                 // a column standing in a wall's footing is on it
                 var on = r.Walls.Select(x => (x, at: Along(x, f.Where), off: Across(x, f.Where))).Where(t => t.off <= Near && t.at >= -Near && t.at <= t.x.Length + Near).OrderBy(t => t.off).FirstOrDefault();
@@ -289,22 +363,14 @@ namespace LoadManager
                 }
             }
 
-            // ---- the points' wind: the roof's range and the lateral's, their extremes taken together
-            bool latOnly = false;
+            // ---- the points' wind, case by case: the roof's in that case's roof wind and the shear wall's in its own case
             foreach (var p in r.AllPoints)
             {
-                double lo = p.RoofWindMin, hi = p.RoofWindMax;
-                if (p.Lateral.Count > 0)
-                {
-                    lo += Math.Min(0, p.Lateral.Values.Min());
-                    hi += Math.Max(0, p.Lateral.Values.Max());
-                    latOnly = true;
-                }
-                p.Load = p.Load.WithWind(lo, hi);
+                if (wcs.Count == 0) continue;
+                p.Load = p.Load.WithWinds(wcs.ToDictionary(wc => wc.Name, wc =>
+                    (wc.Roof >= 0 && wc.Roof < p.RoofWinds.Count ? p.RoofWinds[wc.Roof] : 0) +
+                    (wc.Lateral != null && p.Lateral.TryGetValue(wc.Lateral, out var v) ? v : 0)));
             }
-            if (latOnly && runs.Count > 0)
-                r.Notes.Add("Where the roof's wind and a shear wall's end force meet, the most lifting of each are added (and the most pressing down of each), " +
-                            "whatever their cases: the two designs name their cases differently. That is on the safe side.");
             foreach (var w in r.Walls) w.Points.Sort((x, y) => x.At.CompareTo(y.At));
 
             // ---- the combinations: those with only D, L, Lr, S and W, and only those whose loads are somewhere here
@@ -324,23 +390,65 @@ namespace LoadManager
                 r.Skipped.Add($"Combinations with {string.Join(", ", skippedTypes)} are left out: the load manager has no such loads (rain, tornado and earthquake are not found here).");
             r.Skipped.Add("Combinations with a load that is nowhere on the foundation are left out (they give the same as one without it).");
 
+            // ---- each combination with W once per wind case
+            foreach (var c in r.Combinations)
+            {
+                if (c.Has(LoadType.Wind) && wcs.Count > 0) r.Cases.AddRange(wcs.Select(wc => new FoundationCase { Combination = c, Wind = wc }));
+                else r.Cases.Add(new FoundationCase { Combination = c });
+            }
+
             foreach (var w in r.Walls)
             {
-                foreach (var sg in w.Segments) { Combine(r.Combinations, sg.Load, sg.Combined); sg.Envelope = LoadEnvelope.Of(sg.Combined); }
+                foreach (var sg in w.Segments) { Combine(r.Cases, sg.Load, sg.Combined); sg.Envelope = LoadEnvelope.Of(sg.Combined); }
                 w.Line = LoadEnvelope.Over(w.Segments.Select(x => x.Envelope));
             }
-            foreach (var p in r.AllPoints) { Combine(r.Combinations, p.Load, p.Combined); p.Envelope = LoadEnvelope.Of(p.Combined); }
+            foreach (var p in r.AllPoints) { Combine(r.Cases, p.Load, p.Combined); p.Envelope = LoadEnvelope.Of(p.Combined); }
             return r;
         }
 
-        private static void Combine(IEnumerable<LoadCombination> cs, ServiceLoad l, List<CombinedLoad> into)
+        /// <summary>
+        /// The whole building's wind cases: the wind calculator's own (<see cref="RoofWind.Cases"/>), each once, under its name:
+        /// its roof pressures down the load path, and the shear walls' hold-down forces the Shear Wall Calculator saved under the
+        /// same name. Nothing is paired or made here. A saved shear wall case the calculator does not have now (an older wind
+        /// setup) is left out, with a note. Without the wind calculator's cases (no wind setup), the shear walls' cases alone.
+        /// </summary>
+        private static void WindCasesOf(FoundationAnalysis r, List<RoofWindCase> roof, LateralSection lateral)
         {
-            foreach (var c in cs) into.Add(new CombinedLoad { Combination = c, Max = l.Most(c), Min = l.Least(c) });
+            var lat = lateral?.Cases?.Where(c => !string.IsNullOrEmpty(c)).Distinct().ToList() ?? new List<string>();
+            if (roof.Count == 0)
+            {
+                foreach (var l in lat) r.WindCases.Add(new WindCase { Name = l, Lateral = l });
+                if (lat.Count > 0)
+                    r.Notes.Add($"Wind: the wind calculator's cases are not available here (no roof wind), so the shear walls' {lat.Count} cases are taken alone, " +
+                                "by their names (the wind calculator's); every combination with W taken in each one.");
+                return;
+            }
+            var latSet = new HashSet<string>(lat);
+            for (int i = 0; i < roof.Count; i++)
+                r.WindCases.Add(new WindCase
+                {
+                    Name = roof[i].Name, Roof = i, RoofName = roof[i].Name, From = roof[i].From,
+                    Lateral = latSet.Contains(roof[i].Name) ? roof[i].Name : null,
+                });
+            var names = new HashSet<string>(roof.Select(x => x.Name));
+            var missing = lat.Where(l => !names.Contains(l)).ToList();
+            r.Notes.Add($"Wind: the wind calculator's {roof.Count} wind cases, each on its own (its roof pressures down the load path" +
+                        (lat.Count > missing.Count ? ", and the shear walls' hold-down forces in the same case, by name" : "") +
+                        "); every combination with W taken in each one.");
+            if (missing.Count > 0)
+                r.Notes.Add($"Wind: {missing.Count} of the {lat.Count} shear wall cases saved are not among the wind calculator's cases now (e.g. \"{missing[0]}\"), " +
+                            "so their hold-down forces are left out. Save the shear wall design again so it matches the wind setup.");
+        }
+
+        private static void Combine(IEnumerable<FoundationCase> cs, ServiceLoad l, List<CombinedLoad> into)
+        {
+            foreach (var c in cs) into.Add(new CombinedLoad { Case = c, Max = l.Most(c), Min = l.Least(c) });
         }
 
         private static bool Same(ServiceLoad a, ServiceLoad b) =>
             Math.Abs(a.Dead - b.Dead) < Tol && Math.Abs(a.Live - b.Live) < Tol && Math.Abs(a.RoofLive - b.RoofLive) < Tol && Math.Abs(a.Snow - b.Snow) < Tol &&
-            Math.Abs(a.WindMin - b.WindMin) < Tol && Math.Abs(a.WindMax - b.WindMax) < Tol;
+            Math.Abs(a.WindMin - b.WindMin) < Tol && Math.Abs(a.WindMax - b.WindMax) < Tol &&
+            a.Winds.Count == b.Winds.Count && a.Winds.All(kv => Math.Abs(kv.Value - b.Wind(kv.Key)) < Tol);
 
         private static double Along(FoundationWall w, Point2 p)
         {

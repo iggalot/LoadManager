@@ -25,7 +25,7 @@ namespace LoadManager.Wpf
             void Text(string t, bool muted = false) => root.Children.Add(new TextBlock { Text = t, TextWrapping = TextWrapping.Wrap, Foreground = muted ? Muted : Brushes.Black, Margin = new Thickness(0, 0, 0, 6) });
             string Sym(LoadType t) => LoadCombinations.Symbol(t);
             string F(double v) => v == 0 ? "" : v.ToString("0.###");
-            string Pick(LoadCombination c) => c?.Name ?? "";
+            string Pick(FoundationCase c) => c?.Name ?? "";
 
             bool asd = a.Method == DesignMethod.Asd;
             Text((asd ? "Allowable stress design: ASCE 7-22 2.4 and the IBC 2024 1605.2 alternative combinations. "
@@ -60,7 +60,7 @@ namespace LoadManager.Wpf
                 var heads = new List<string> { "Combination" };
                 if (w.Segments.Count > 0) heads.AddRange(new[] { "Line most (plf)", "Line least (plf)" });
                 heads.AddRange(w.Points.Select(p => $"{p.From}: most / least (lb)"));
-                var rows = a.Combinations.Select((c, i) =>
+                var rows = a.Cases.Select((c, i) =>
                 {
                     var r = new List<string> { c.Name };
                     if (w.Segments.Count > 0)

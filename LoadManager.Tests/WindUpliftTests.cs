@@ -199,27 +199,35 @@ namespace LoadManager.Tests
         /// on the model's plan. qh Kd = 0.00256 × Kz 0.849 (2.01 (15/900)^(2/9.5), 15 ft, C) × Kd 0.85 × 115² = 24.43 psf. Fig. 27.3-1, h/L ≤ 0.5 both
         /// ways: 0 to h/2 from the windward edge Cp −0.9; G 0.85, GCpi +0.18: p = 24.43 × (−0.9 × 0.85 − 0.18) = −23.09 psf. The
         /// soffit of the windward eave: 0.8 × 0.85 × 24.43 = 16.61 psf up; the eave's top −0.9 × 0.85 × 24.43 = −18.69, so −35.30.
+        /// With −GCpi the same zone: 24.43 × (−0.9 × 0.85 + 0.18) = −14.29. The cases are the wind calculator's own (212 for
+        /// ASCE 7-16 Ch. 27: 16 + 32 + 32 + 128 + 4 minimum), each under its name; the minimum puts no pressure on the roof.
         /// </summary>
         [TestMethod]
-        public void Mwfrs_ZonesOnThePlan_HandCalc()
+        public void Cases_TheCalculatorsOwn_ZonesOnThePlan_HandCalc()
         {
             var data = new BuildingData { BuildingLength = 30, BuildingWidth = 20, BuildingHeight = 10, RoofType = RoofTypes.ROOF_TYPE_FLAT, EnclosureType = BuildingEnclosures.BLDG_ENCLOSED, OverhangWidth = 2 };
             var w = WindAnalysis.Run(ASCE7_Versions.ASCE_VER_7_16, new WindParameters_Base(), data);
             var box = new Rect2(5, 7, 35, 27);
-            var cases = RoofWind.Mwfrs(box, w.MwfrsAlongLength, w.MwfrsAlongWidth);
-            Assert.AreEqual(8, cases.Count);
+            var own = WindCases.For(w);
+            var cases = RoofWind.Cases(box, own);
+            Assert.AreEqual(212, cases.Count);
+            CollectionAssert.AreEqual(own.Select(c => c.Name).ToList(), cases.Select(c => c.Name).ToList(), "the calculator's cases, in its order");
             double qhKd = 0.00256 * 2.01 * Math.Pow(15.0 / 900, 2 / 9.5) * 0.85 * 115 * 115;
             double edge = qhKd * (-0.9 * 0.85 - 0.18);
             Assert.AreEqual(-23.09, edge, 0.01);
-            RoofWindCase Case(string side) => cases.Single(c => c.Name == $"Wind from the {side}, roof Cp giving the larger uplift");
-            Assert.AreEqual(edge, Case("west").PressureAt(5 + 1, 17), 0.01);           // 1 ft in from the west edge
-            Assert.AreEqual(edge, Case("east").PressureAt(35 - 1, 17), 0.01);          // mirrored
-            Assert.AreEqual(edge, Case("south").PressureAt(20, 7 + 1), 0.01);          // the along-width calculation, turned
-            Assert.AreEqual(edge, Case("north").PressureAt(20, 27 - 1), 0.01);
-            Assert.IsTrue(Case("west").PressureAt(35 - 1, 17) > edge + 1);             // the leeward end lifts less
-            Assert.AreEqual(-0.9 * 0.85 * qhKd - 0.8 * 0.85 * qhKd, Case("west").PressureAt(5 - 1, 17), 0.01);   // windward eave, soffit too
-            Assert.AreEqual(-35.30, Case("west").PressureAt(5 - 1, 17), 0.02);
-            Assert.IsTrue(Case("west").PressureAt(35 + 1, 17) > Case("west").PressureAt(35 - 1, 17));            // leeward eave: no soffit, no internal
+            RoofWindCase Case(string from, string gcpi = "+GCpi") => cases.Single(c => c.Name == $"Case 1, from {from}, roof Case A, {gcpi}");
+            Assert.AreEqual(edge, Case("W").PressureAt(5 + 1, 17), 0.01);           // 1 ft in from the west edge
+            Assert.AreEqual(edge, Case("E").PressureAt(35 - 1, 17), 0.01);          // mirrored
+            Assert.AreEqual(edge, Case("S").PressureAt(20, 7 + 1), 0.01);           // the along-width calculation, turned
+            Assert.AreEqual(edge, Case("N").PressureAt(20, 27 - 1), 0.01);
+            Assert.AreEqual(qhKd * (-0.9 * 0.85 + 0.18), Case("W", "−GCpi").PressureAt(5 + 1, 17), 0.01, "−GCpi: its own case");
+            Assert.AreEqual(-14.29, Case("W", "−GCpi").PressureAt(5 + 1, 17), 0.01);
+            Assert.IsTrue(Case("W").PressureAt(35 - 1, 17) > edge + 1);             // the leeward end lifts less
+            Assert.AreEqual(-0.9 * 0.85 * qhKd - 0.8 * 0.85 * qhKd, Case("W").PressureAt(5 - 1, 17), 0.01);   // windward eave, soffit too
+            Assert.AreEqual(-35.30, Case("W").PressureAt(5 - 1, 17), 0.02);
+            Assert.IsTrue(Case("W").PressureAt(35 + 1, 17) > Case("W").PressureAt(35 - 1, 17));            // leeward eave: no soffit, no internal
+            var min = cases.Single(c => c.Name.StartsWith("Minimum (27.1.5), from W"));
+            Assert.AreEqual(0, min.PressureAt(20, 17), 1e-12);
         }
 
         /// <summary>The C&amp;C case: any point of the roof lifts at least the 16 psf minimum, more at a corner than in the field.</summary>

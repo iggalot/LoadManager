@@ -51,6 +51,8 @@ namespace LoadManager
         public List<string> Zones { get; } = new List<string>();
         /// <summary>Beam ends and columns landing on it, here or on a wall above that stands on it (each needs a post).</summary>
         public List<ConcentratedLoad> Points { get; } = new List<ConcentratedLoad>();
+        /// <summary>Those of <see cref="Points"/> landing at this level (not brought down through the wall's own story above).</summary>
+        public List<ConcentratedLoad> Here { get; } = new List<ConcentratedLoad>();
         public List<string> Notes { get; } = new List<string>();
 
         /// <summary>One line: "tributary 6 to 10 ft; plus the wall above W7; 2 concentrated loads".</summary>
@@ -118,6 +120,14 @@ namespace LoadManager
         public PointLoad Point { get; set; } = new PointLoad();
     }
 
+    /// <summary>A beam end or a column landing on a column at a level.</summary>
+    public sealed class ColumnLanding
+    {
+        public string LevelId { get; set; }
+        public string From { get; set; }
+        public PointLoad Load { get; set; } = new PointLoad();
+    }
+
     /// <summary>What a column carries down to its base.</summary>
     public sealed class ColumnLoad
     {
@@ -125,6 +135,8 @@ namespace LoadManager
         public PointLoad Load { get; set; } = new PointLoad();
         /// <summary>What lands on it ("BM1 at Level 2").</summary>
         public List<string> From { get; } = new List<string>();
+        /// <summary>The same, each with its load and the level it lands at.</summary>
+        public List<ColumnLanding> Landings { get; } = new List<ColumnLanding>();
         /// <summary>What it stands on: a wall, a beam, a column, or "the foundation"; null when nothing is drawn under it.</summary>
         public string BaseOn { get; set; }
     }
@@ -376,7 +388,11 @@ namespace LoadManager
                         }
                     }
                     foreach (var g in landings.Where(g => g.Target == w.Id))
-                        r.Points.Add(new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From });
+                    {
+                        var here = new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From };
+                        r.Points.Add(here);
+                        r.Here.Add(here);
+                    }
                     foreach (var p in r.Points) p.At = Along(me, p.Where);
                     r.Computed = r.FromLevel + r.FromAbove;
                     // a load entered by hand replaces the computed one, here and in everything under the wall
@@ -394,6 +410,7 @@ namespace LoadManager
                     var cl = Col(g.Target);
                     cl.Load = cl.Load + g.Load;
                     cl.From.Add($"{g.From} at {lv.Name}");
+                    cl.Landings.Add(new ColumnLanding { LevelId = lv.Id, From = g.From, Load = g.Load });
                 }
 
                 // walls standing on this level with no wall or beam under them

@@ -43,6 +43,8 @@ namespace LoadManager.App
 
         private void FoundationSide()
         {
+            if (mode == Mode.Foundation3D && fb != null) { FreeBodySide(); return; }
+            if (mode == Mode.Foundation3D) Foundation3DSide(); else comboList = null;
             side.Children.Add(Head("Combinations"));
             var asd = new RadioButton { Content = "Allowable stress (ASD): ASCE 7-22 2.4 and IBC 1605.2", IsChecked = method == DesignMethod.Asd, Margin = new Thickness(0, 0, 0, 2) };
             var lrfd = new RadioButton { Content = "Strength (LRFD): ASCE 7-22 2.3", IsChecked = method == DesignMethod.Strength, Margin = new Thickness(0, 0, 0, 4) };
@@ -50,7 +52,7 @@ namespace LoadManager.App
             lrfd.Checked += (s, e) => { method = DesignMethod.Strength; Changed(); };
             side.Children.Add(asd);
             side.Children.Add(lrfd);
-            side.Children.Add(Para($"{foundation.Combinations.Count} combinations with the loads found here: " + string.Join(", ", foundation.Combinations.Take(6).Select(c => c.Name)) + (foundation.Combinations.Count > 6 ? "…" : ""), true));
+            side.Children.Add(Para($"{foundation.Combinations.Count} code combinations with the loads found here" + (foundation.WindCases.Count > 0 ? $"; each with W taken once in each of the {foundation.WindCases.Count} wind cases: {foundation.Cases.Count} in all" : "") + ". " + string.Join(", ", foundation.Combinations.Take(6).Select(c => c.Name)) + (foundation.Combinations.Count > 6 ? "…" : ""), true));
             var wrap = new WrapPanel();
             wrap.Children.Add(Link("All the numbers…", "Every combination with its load factors, each wall and point", () => ShowCombined(selectedWall)));
             wrap.Children.Add(Link("Wind uplift…", "The roof wind against the dead load", ShowUplift));
@@ -144,7 +146,7 @@ namespace LoadManager.App
             }
             if (w.Segments.Count > 0)
             {
-                var list = foundation.Combinations.Select((c, i) => new CombinedLoad { Combination = c, Max = w.Segments.Max(s => s.Combined[i].Max), Min = w.Segments.Min(s => s.Combined[i].Min) }).ToList();
+                var list = foundation.Cases.Select((c, i) => new CombinedLoad { Case = c, Max = w.Segments.Max(s => s.Combined[i].Max), Min = w.Segments.Min(s => s.Combined[i].Min) }).ToList();
                 side.Children.Add(Para("Each combination, the most and least along it:", true));
                 side.Children.Add(Combos(list, "plf"));
             }
@@ -172,9 +174,9 @@ namespace LoadManager.App
             {
                 g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                 var c = list[i];
-                Cell(c.Combination.Name, i + 1, 0);
-                Cell($"{c.Max:N0}", i + 1, 1, c.Combination == env.MaxBy);
-                Cell($"{c.Min:N0}", i + 1, 2, c.Combination == env.MinBy, c.Min < 0 ? up : null);
+                Cell(c.Case.Name, i + 1, 0);
+                Cell($"{c.Max:N0}", i + 1, 1, c.Case == env.MaxBy);
+                Cell($"{c.Min:N0}", i + 1, 2, c.Case == env.MinBy, c.Min < 0 ? up : null);
             }
             return new Expander { Header = $"Every combination ({list.Count})", IsExpanded = false, Content = g };
         }
@@ -254,41 +256,336 @@ namespace LoadManager.App
             ctx.DrawGeometry(fill, pen, g);
         }
 
+        // ------------------------------------------------------------------ the foundation in 3D: which combination
+
+        /// <summary>The combination drawn in 3D; null: the envelope of them all.</summary>
+        private FoundationCase combo3D;
+        private ListBox comboList;
+        private bool settingList;
+        private readonly TextBlock title3D = new TextBlock { FontSize = 15, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Ink };
+        private readonly TextBlock sub3D = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Ui.Muted, Margin = new Thickness(0, 2, 0, 4) };
+        private Border title3DBox;
+
+        /// <summary>The label over the 3D view saying what is drawn, with the way back to the envelope and to the next and previous combination.</summary>
+        private UIElement Title3DBox()
+        {
+            var buttons = new WrapPanel();
+            Button B3(string text, string tip, Action a)
+            {
+                var b = new Button { Content = text, ToolTip = tip, Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 0, 6, 0) };
+                b.Click += (s, e) => a();
+                return b;
+            }
+            buttons.Children.Add(B3("Envelope", "Back to the envelope of every combination", () => { CloseFreeBody(); Show3DCombo(null); }));
+            buttons.Children.Add(B3("◀ Previous", "The combination before this one", () => { if (fb != null) StepFreeBody(-1); else Step3D(-1); }));
+            buttons.Children.Add(B3("Next ▶", "The next combination", () => { if (fb != null) StepFreeBody(1); else Step3D(1); }));
+            var stack = new StackPanel();
+            stack.Children.Add(title3D);
+            stack.Children.Add(sub3D);
+            stack.Children.Add(buttons);
+            title3DBox = new Border
+            {
+                Child = stack, MaxWidth = 560, Background = new SolidColorBrush(Color.FromArgb(0xEC, 0xFF, 0xFF, 0xFF)), BorderBrush = Ui.Line, BorderThickness = new Thickness(1),
+                Padding = new Thickness(10, 6, 10, 8), Margin = new Thickness(10), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top, Visibility = Visibility.Collapsed,
+            };
+            return title3DBox;
+        }
+
+        private void Step3D(int by)
+        {
+            var all = foundation?.Cases;
+            if (all == null || all.Count == 0) return;
+            int i = combo3D == null ? (by > 0 ? -1 : all.Count) : all.IndexOf(combo3D);
+            i += by;
+            Show3DCombo(i < 0 || i >= all.Count ? null : all[i]);
+        }
+
+        private void Show3DCombo(FoundationCase c, bool keepJump = false)
+        {
+            combo3D = c;
+            if (!keepJump) { jumpFrom = null; jumpNote = null; }
+            Title3D();
+            if (comboList != null)
+            {
+                settingList = true;
+                comboList.SelectedIndex = c == null ? 0 : foundation.Cases.IndexOf(c) + 1;
+                comboList.ScrollIntoView(comboList.SelectedItem);
+                settingList = false;
+            }
+            if (view3D.Visibility == Visibility.Visible) view3D.Show(B);
+        }
+
+        private void Title3D()
+        {
+            if (fb != null) { FreeBodyTitle(); return; }
+            int n = foundation?.Cases.Count ?? 0;
+            if (combo3D == null)
+            {
+                title3D.Text = $"ENVELOPE of all {n} {MethodName} combinations";
+                sub3D.Text = "Each piece of footing and each point shows its own most down and most up over every combination: the combination that governs one place " +
+                             "is not, in general, the one that governs another, and the most down and the most up at one place come from different ones. " +
+                             "Click a load (an arrow or a row of them) to go to the case that gives it there; or pick one in the list, or step through them. Click a wall, beam or column for its free body.";
+            }
+            else
+            {
+                int i = foundation.Cases.IndexOf(combo3D);
+                title3D.Text = $"Combination {i + 1} of {n}: {combo3D.Combination.Name}";
+                sub3D.Text = (combo3D.Wind != null ? $"Wind case: {combo3D.Wind.Name}, the same case everywhere. " : "") +
+                             $"{combo3D.Equation}. This one combination alone, everywhere." +
+                             (combo3D.Combination.Types.Any(t => t == LoadType.Live || t == LoadType.RoofLive || t == LoadType.Snow)
+                                 ? " Its gravity variable loads are each taken in or left out, whichever is worse, so a place can show both a most down and a most up." : "") +
+                             (jumpNote == null ? "" : "\n" + jumpNote + " (gold on the footing)");
+            }
+        }
+
+        /// <summary>The side panel's list of every combination for the 3D view, the envelope first; the arrow keys step through it.</summary>
+        private void Foundation3DSide()
+        {
+            side.Children.Add(Head("Drawn in 3D"));
+            var all = foundation.Cases;
+            comboList = new ListBox { MaxHeight = 420, Margin = new Thickness(0, 0, 0, 6), BorderBrush = Ui.Line };
+            ScrollViewer.SetHorizontalScrollBarVisibility(comboList, ScrollBarVisibility.Disabled);
+            TextBlock Item(string head, string body, bool bold)
+            {
+                var t = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 1, 0, 1) };
+                t.Inlines.Add(new System.Windows.Documents.Run(head) { FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal });
+                if (!string.IsNullOrEmpty(body)) t.Inlines.Add(new System.Windows.Documents.Run("\n" + body) { Foreground = Ui.Muted, FontSize = 11 });
+                return t;
+            }
+            var segs = foundation.Walls.SelectMany(w => w.Segments).ToList();
+            var pts = foundation.AllPoints.ToList();
+            string Range(int i)
+            {
+                double lMax = segs.Select(s => i < s.Combined.Count ? s.Combined[i].Max : 0).DefaultIfEmpty(0).Max();
+                double lMin = segs.Select(s => i < s.Combined.Count ? s.Combined[i].Min : 0).DefaultIfEmpty(0).Min();
+                double pMax = pts.Select(p => i < p.Combined.Count ? p.Combined[i].Max : 0).DefaultIfEmpty(0).Max();
+                double pMin = pts.Select(p => i < p.Combined.Count ? p.Combined[i].Min : 0).DefaultIfEmpty(0).Min();
+                return $"footings: most down {lMax:N0} plf" + (lMin < -1e-9 ? $", most up {-lMin:N0} plf" : "") +
+                       $"; points: most down {pMax:N0} lb" + (pMin < -1e-9 ? $", most up {-pMin:N0} lb" : "");
+            }
+            comboList.Items.Add(Item($"Envelope of all {all.Count}", "the most down and most up at each place, whichever combination and wind case gives it", true));
+            for (int i = 0; i < all.Count; i++)
+            {
+                var c = all[i];
+                var t = Item($"{i + 1}. {c.Combination.Name}", (c.Wind != null ? $"W: {c.Wind.Name}\n" : "") + $"{c.Equation}; {Range(i)}", false);
+                comboList.Items.Add(new ListBoxItem { Content = t, Tag = c });
+            }
+            comboList.SelectedIndex = combo3D == null ? 0 : all.IndexOf(combo3D) + 1;
+            comboList.SelectionChanged += (s, e) =>
+            {
+                if (settingList || comboList.SelectedIndex < 0) return;
+                int k = comboList.SelectedIndex - 1;
+                Show3DCombo(k < 0 || k >= all.Count ? null : all[k]);
+            };
+            // a filter: the list runs to hundreds with the wind cases ("0.6D", "torsion", "flexible", "from the west")
+            var filter = new TextBox { Margin = new Thickness(0, 0, 0, 4), ToolTip = "Show only the combinations whose name or wind case has these words" };
+            var hint = new TextBlock { Text = "Filter: e.g. 0.6D + 0.6W, Case 4, flexible, west", Foreground = Ui.Muted, FontSize = 11, Margin = new Thickness(0, 0, 0, 2) };
+            filter.TextChanged += (s, e) =>
+            {
+                var words = filter.Text.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(w => w.Trim()).Where(w => w.Length > 0).ToList();
+                foreach (var item in comboList.Items.OfType<ListBoxItem>())
+                {
+                    if (!(item.Tag is FoundationCase c)) continue;
+                    string text = c.Name + " " + c.Equation;
+                    bool show = words.All(w => text.IndexOf(w, StringComparison.OrdinalIgnoreCase) >= 0);
+                    item.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+                }
+            };
+            side.Children.Add(hint);
+            side.Children.Add(filter);
+            side.Children.Add(comboList);
+            side.Children.Add(Para("Click one to draw it alone; the arrow keys move up and down the list. Envelope, above the view, comes back to them all. " +
+                                   "Every combination is drawn to the envelope's scale, so they compare by eye.", true));
+        }
+
         // ------------------------------------------------------------------ the foundation in 3D
 
+        /// <summary>The top and the bottom of the footing as drawn in 3D (ft, the ground at 0).</summary>
+        private const double FootingTop = -0.2, FootingBottom = -0.9;
+
+        /// <summary>The reactions' colour in 3D: red, under the footing (the loads from above are blue, on top of it).</summary>
+        internal static readonly Color ReactionColor = Color.FromRgb(0xC6, 0x28, 0x28);
+
         /// <summary>
-        /// The foundation's loads in 3D, under the see-through building: along each wall's footing a load diagram standing on it, its
-        /// height the most combined line load down (blue), and hanging under it the most up where it lifts (vermilion); at each point
-        /// an arrow down onto the foundation for its most down, and one pulling up beside it where it lifts.
+        /// The foundation's loads in 3D, under the see-through building. The loads from above are blue and act on the top of the
+        /// footing, their arrows pointing the way the load acts: along each footing a plate as tall as the most combined line load
+        /// down with arrows down onto it, and where a footing lifts a second plate (beside it, outward) with arrows up; at each point
+        /// an arrow down onto it for its most down, and one pulling up beside it where it lifts. The reactions are red and act on the
+        /// bottom of the footing, equal and opposite: the ground pushing up under a load down, the anchorage pulling down under an uplift.
         /// </summary>
         private Model3D Foundation3D()
         {
             if (foundation == null) return null;
+            picks3D.Clear();
             var g = new Model3DGroup();
-            var down = Mat(Color.FromArgb(0xC0, DownColor.R, DownColor.G, DownColor.B));
-            var up = Mat(Color.FromArgb(0xD0, UpColor.R, UpColor.G, UpColor.B));
+            var load = Mat(Color.FromArgb(0x90, DownColor.R, DownColor.G, DownColor.B));
+            var loadArrow = Mat(Color.FromArgb(0xFF, DownColor.R, DownColor.G, DownColor.B));
+            var react = Mat(Color.FromArgb(0x90, ReactionColor.R, ReactionColor.G, ReactionColor.B));
+            var reactArrow = Mat(Color.FromArgb(0xFF, ReactionColor.R, ReactionColor.G, ReactionColor.B));
             var footing = Mat(Color.FromArgb(0xFF, 0x9C, 0xA3, 0xAF));
             double k = 1.6 * lineDepthFt / maxLine;
+            // the envelope, or one combination (its own most down and most up: variable loads in or out, the wind either way)
+            int ci = combo3D == null ? -1 : foundation.Cases.IndexOf(combo3D);
+            (double Max, double Min) Of(LoadEnvelope e, List<CombinedLoad> c) => ci >= 0 && ci < c.Count ? (c[ci].Max, c[ci].Min) : (e.Max, e.Min);
             double arrow = 2.2 * Math.Max(4, lineDepthFt * 2);   // the largest point load's arrow (ft)
+            // the middle of the footprint: an uplift plate stands beside the footing on the side away from it
+            var mids = foundation.Walls.Where(w => w.Length > 0).Select(w => w.PointAt(w.Length / 2)).ToList();
+            var centre = mids.Count == 0 ? new Point2(0, 0) : new Point2(mids.Average(m => m.X), mids.Average(m => m.Y));
             foreach (var w in foundation.Walls)
             {
                 if (w.Length <= 0) continue;
                 // the footing itself, a strip under the wall
-                g.Children.Add(Strip(w.Start, w.End, 1.2, -0.9, -0.2, footing));
+                g.Children.Add(Strip(w.Start, w.End, 1.2, FootingBottom, FootingTop, footing));
+                double ux = -(w.End.Y - w.Start.Y) / w.Length, uy = (w.End.X - w.Start.X) / w.Length;   // a unit normal in plan
+                var mid = w.PointAt(w.Length / 2);
+                if ((mid.X - centre.X) * ux + (mid.Y - centre.Y) * uy < 0) { ux = -ux; uy = -uy; }   // outward
                 foreach (var s in w.Segments)
                 {
                     var a = w.PointAt(s.A); var b = w.PointAt(s.B);
-                    if (s.Envelope.Max > 0) g.Children.Add(Strip(a, b, 0.12, 0, s.Envelope.Max * k, down));
-                    if (s.Envelope.Min < 0) g.Children.Add(Strip(a, b, 0.12, s.Envelope.Min * k - 0.2, -0.2, up));
+                    var v = Of(s.Envelope, s.Combined);
+                    string where = $"wall {w.Id}'s footing, {s.A:0.#} to {s.B:0.#} ft";
+                    if (v.Max > 0)
+                    {
+                        double h = v.Max * k;
+                        LineArrows(g, a, b, FootingTop + h, FootingTop, loadArrow);
+                        LineArrows(g, a, b, FootingBottom - h, FootingBottom, reactArrow);
+                        Pickable(s.Envelope.MaxBy, $"the most down on {where}, {s.Envelope.Max:N0} plf", a, b, FootingTop, FootingTop + h);
+                        Pickable(s.Envelope.MaxBy, $"the reaction under the most down on {where}, {s.Envelope.Max:N0} plf", a, b, FootingBottom - h, FootingBottom);
+                        if (ReferenceEquals(jumpFrom, s) && !jumpUp) Mark(g, a, b);
+                    }
+                    if (v.Min < -1e-9)
+                    {
+                        double h = -v.Min * k, o = 0.75;
+                        var ao = new Point2(a.X + ux * o, a.Y + uy * o); var bo = new Point2(b.X + ux * o, b.Y + uy * o);
+                        LineArrows(g, ao, bo, FootingTop, FootingTop + h, loadArrow);
+                        LineArrows(g, ao, bo, FootingBottom, FootingBottom - h, reactArrow);
+                        Pickable(s.Envelope.MinBy, $"the most up on {where}, {-s.Envelope.Min:N0} plf", ao, bo, FootingTop, FootingTop + h);
+                        Pickable(s.Envelope.MinBy, $"the anchorage under the most up on {where}, {-s.Envelope.Min:N0} plf", ao, bo, FootingBottom - h, FootingBottom);
+                        if (ReferenceEquals(jumpFrom, s) && jumpUp) Mark(g, ao, bo);
+                    }
+                    void Pickable(FoundationCase c, string what, Point2 pa, Point2 pb, double z0, double z1) =>
+                        picks3D.Add(new Pick3D { Case = c, What = what, Of = s, Up = what.Contains("most up"), Corners = new[] { P3(pa.X, pa.Y, z0), P3(pb.X, pb.Y, z0), P3(pb.X, pb.Y, z1), P3(pa.X, pa.Y, z1) } });
                 }
             }
             foreach (var p in foundation.AllPoints)
             {
-                var e = p.Envelope;
-                if (e.Max > 0) Arrow(g, p.Where, e.Max / maxPoint * arrow, true, down);
-                if (e.Lifts) Arrow(g, new Point2(p.Where.X + 0.7, p.Where.Y + 0.7), -e.Min / maxPoint * arrow, false, up);
+                var e = Of(p.Envelope, p.Combined);
+                if (e.Max > 0)
+                {
+                    double len = Math.Max(1.2, e.Max / maxPoint * arrow);
+                    Arrow(g, p.Where, FootingTop + len, FootingTop, loadArrow, 0.2, 0.65);                  // the load, down onto the top
+                    Arrow(g, p.Where, FootingBottom - len, FootingBottom, reactArrow, 0.2, 0.65);           // the reaction, up under it
+                    picks3D.Add(new Pick3D { Case = p.Envelope.MaxBy, Of = p, What = $"the most down at {p.From}, {p.Envelope.Max:N0} lb", Corners = new[] { P3(p.Where.X, p.Where.Y, FootingTop + len), P3(p.Where.X, p.Where.Y, FootingTop) } });
+                    picks3D.Add(new Pick3D { Case = p.Envelope.MaxBy, Of = p, What = $"the reaction under the most down at {p.From}, {p.Envelope.Max:N0} lb", Corners = new[] { P3(p.Where.X, p.Where.Y, FootingBottom - len), P3(p.Where.X, p.Where.Y, FootingBottom) } });
+                    if (ReferenceEquals(jumpFrom, p) && !jumpUp) Mark(g, p.Where, p.Where);
+                }
+                if (e.Min < -1e-9)
+                {
+                    double len = Math.Max(1.2, -e.Min / maxPoint * arrow);
+                    var at = new Point2(p.Where.X + 0.9, p.Where.Y + 0.9);
+                    Arrow(g, at, FootingTop, FootingTop + len, loadArrow, 0.2, 0.65);                       // the uplift, pulling the top up
+                    Arrow(g, at, FootingBottom, FootingBottom - len, reactArrow, 0.2, 0.65);                // the reaction, holding it down
+                    picks3D.Add(new Pick3D { Case = p.Envelope.MinBy, Of = p, Up = true, What = $"the most up at {p.From}, {-p.Envelope.Min:N0} lb", Corners = new[] { P3(at.X, at.Y, FootingTop), P3(at.X, at.Y, FootingTop + len) } });
+                    picks3D.Add(new Pick3D { Case = p.Envelope.MinBy, Of = p, Up = true, What = $"the anchorage under the most up at {p.From}, {-p.Envelope.Min:N0} lb", Corners = new[] { P3(at.X, at.Y, FootingBottom), P3(at.X, at.Y, FootingBottom - len) } });
+                    if (ReferenceEquals(jumpFrom, p) && jumpUp) Mark(g, at, at);
+                }
             }
             return g;
+        }
+
+        // ------------------------------------------------------------------ the foundation in 3D: clicking a load goes to its case
+
+        /// <summary>A load drawn in 3D that can be clicked: its outline (a line for an arrow, four corners for a row) and the case that governs it.</summary>
+        private sealed class Pick3D
+        {
+            public Point3D[] Corners;
+            public FoundationCase Case;
+            public string What;
+            public object Of;
+            public bool Up;
+        }
+
+        private readonly List<Pick3D> picks3D = new List<Pick3D>();
+        /// <summary>The place a click jumped from (a segment or a point) and whether its uplift: marked in gold while its case is drawn.</summary>
+        private object jumpFrom;
+        private bool jumpUp;
+        private string jumpNote;
+
+        /// <summary>A click on the 3D view: on (or within 10 px of) a load, to the case that governs it there.</summary>
+        private bool Pick3DAt(Point click)
+        {
+            if (mode != Mode.Foundation3D || fb != null) return false;
+            Pick3D best = null;
+            double bestD = 10;
+            foreach (var t in picks3D)
+            {
+                var pts = t.Corners.Select(c => view3D.Project(c)).ToList();
+                if (pts.Any(x => x == null)) continue;
+                var s = pts.Select(x => x.Value).ToList();
+                // an arrow within a few pixels wins over the inside of a row of them it stands in front of
+                double edge = Enumerable.Range(0, s.Count == 2 ? 1 : s.Count).Min(i => SegDist(click, s[i], s[(i + 1) % s.Count]));
+                double d = s.Count >= 3 && Inside(s, click) ? Math.Min(edge, 6) : edge;
+                if (d < bestD) { bestD = d; best = t; }
+            }
+            if (best == null || best.Case == null) return false;
+            jumpFrom = best.Of; jumpUp = best.Up;
+            int i0 = foundation.Cases.IndexOf(best.Case);
+            jumpNote = $"Jumped here from {best.What}: this case gives it.";
+            status.Text = $"{char.ToUpper(best.What[0])}{best.What.Substring(1)}: combination {i0 + 1}, {best.Case.Name}.";
+            Show3DCombo(best.Case, keepJump: true);
+            return true;
+        }
+
+        private static bool Inside(List<Point> poly, Point p)
+        {
+            bool c = false;
+            for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+                if ((poly[i].Y > p.Y) != (poly[j].Y > p.Y) && p.X < (poly[j].X - poly[i].X) * (p.Y - poly[i].Y) / (poly[j].Y - poly[i].Y) + poly[i].X) c = !c;
+            return c;
+        }
+
+        private static double SegDist(Point p, Point a, Point b)
+        {
+            var ab = b - a;
+            double l2 = ab.LengthSquared;
+            double t = l2 < 1e-9 ? 0 : Math.Max(0, Math.Min(1, ((p - a) * ab) / l2));
+            return (p - (a + t * ab)).Length;
+        }
+
+        /// <summary>The place a click jumped from: a gold band on the footing there.</summary>
+        private static void Mark(Model3DGroup g, Point2 a, Point2 b)
+        {
+            var gold = Mat(Color.FromRgb(0xF5, 0xB0, 0x00));
+            if (Dist(a, b) < 1e-6) { a = new Point2(a.X - 0.6, a.Y); b = new Point2(b.X + 0.6, b.Y); }
+            g.Children.Add(Strip(a, b, 1.5, FootingTop - 0.02, FootingTop + 0.12, gold));
+        }
+
+        /// <summary>
+        /// A distributed load as drawn by hand, from z <paramref name="tail"/> to the tips at <paramref name="tip"/>: a row of thin
+        /// arrows, one at each end and about every 1.5 ft between, their tails joined by a slim bar; in a light tint of the colour,
+        /// so the point loads (full colour) stand apart from it.
+        /// </summary>
+        private static void LineArrows(Model3DGroup g, Point2 a, Point2 b, double tail, double tip, Material m)
+        {
+            double len = Dist(a, b);
+            if (len <= 0 || Math.Abs(tip - tail) < 0.05) return;
+            var light = Light(m);
+            int n = Math.Max(1, (int)Math.Ceiling(len / 1.5));
+            for (int i = 0; i <= n; i++)
+            {
+                double t = (double)i / n;
+                Arrow(g, new Point2(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t), tail, tip, light, 0.06, 0.22);
+            }
+            g.Children.Add(Strip(a, b, 0.12, tail - 0.06, tail + 0.06, light));
+        }
+
+        /// <summary>A lighter tint of a material's colour (25 % toward white), for the distributed loads: set apart from the point loads, still easy to see.</summary>
+        private static Material Light(Material m)
+        {
+            if (!(m is DiffuseMaterial d && d.Brush is SolidColorBrush s)) return m;
+            var c = s.Color;
+            byte T(byte x) => (byte)(x + (255 - x) * 0.25);
+            return Mat(Color.FromRgb(T(c.R), T(c.G), T(c.B)));
         }
 
         private static Material Mat(Color c)
@@ -312,13 +609,17 @@ namespace LoadManager.App
             }, m);
         }
 
-        /// <summary>An arrow at a point: down onto the ground from <paramref name="length"/> above it, or up from the ground that far.</summary>
-        private static void Arrow(Model3DGroup g, Point2 at, double length, bool downward, Material m)
+        /// <summary>
+        /// A vertical arrow at a plan point, its tail at z <paramref name="zTail"/> and its tip at <paramref name="zTip"/> (up or down);
+        /// <paramref name="h"/> is half the shaft's width, <paramref name="hw"/> half the head's.
+        /// </summary>
+        private static void Arrow(Model3DGroup g, Point2 at, double zTail, double zTip, Material m, double h, double hw)
         {
-            length = Math.Max(1.2, length);
-            double tip = Math.Min(1.6, length * 0.4), h = 0.2, hw = 0.65;
-            double zTip = downward ? 0 : length, zBase = downward ? tip : length - tip;
-            double z0 = downward ? tip : 0, z1 = downward ? length : length - tip;
+            double length = Math.Abs(zTip - zTail), dir = Math.Sign(zTip - zTail);
+            if (length <= 0) return;
+            double head = Math.Min(hw * 2.5, length * 0.4);
+            double zBase = zTip - dir * head;                       // where the head meets the shaft
+            double z0 = Math.Min(zTail, zBase), z1 = Math.Max(zTail, zBase);
             g.Children.Add(Hexa(new[]
             {
                 P3(at.X - h, at.Y - h, z0), P3(at.X + h, at.Y - h, z0), P3(at.X + h, at.Y + h, z0), P3(at.X - h, at.Y + h, z0),

@@ -37,7 +37,7 @@ namespace LoadManager.App
         private readonly StackPanel side = new StackPanel { Margin = new Thickness(12, 10, 12, 12) };
         private readonly TextBlock status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(10, 0, 10, 0) };
         private readonly ToggleButton loadsTab, foundationTab, tab3D;
-        private readonly TextBlock legend3D = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 520, Foreground = Ui.Ink, Background = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)), Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(10), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };
+        private readonly TextBlock legend3D = new TextBlock { TextWrapping = TextWrapping.Wrap, MaxWidth = 520, Foreground = Ui.Ink, Background = new SolidColorBrush(Color.FromArgb(0xE0, 0xFF, 0xFF, 0xFF)), Padding = new Thickness(8, 4, 8, 4), Margin = new Thickness(10, 10, 10, 44), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };   // above the 3D view's bottom bar
 
         private ModelDocument doc;
         private string path;
@@ -121,16 +121,21 @@ namespace LoadManager.App
 
             levelBox = new Border { Child = levelBar, Background = Ui.Bar, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(8, 3, 8, 3) };
             diagramBox = new Border { Child = diagram, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 1, 0, 0), Visibility = Visibility.Collapsed };
+            // the plan's bottom bar, as in every view: VIEW, zoom to all, the mouse hint
+            var planBar = Ui.ViewBar(sketch.ZoomExtents, Ui.PlanHint);
             var plan = new DockPanel();
             DockPanel.SetDock(levelBox, Dock.Top);
+            DockPanel.SetDock(planBar, Dock.Bottom);
             DockPanel.SetDock(diagramBox, Dock.Bottom);
             plan.Children.Add(levelBox);
+            plan.Children.Add(planBar);
             plan.Children.Add(diagramBox);
             plan.Children.Add(sketch);
             var center = new Grid();
             center.Children.Add(plan);
             center.Children.Add(view3D);
             center.Children.Add(legend3D);
+            center.Children.Add(Title3DBox());
 
             var sideBorder = new Border
             {
@@ -160,7 +165,9 @@ namespace LoadManager.App
             sketch.PreviewKeyDown += (s, e) => { if (!(e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.None)) e.Handled = true; };
             sketch.DrawOver += (s, e) => { if (mode == Mode.Loads) DrawLoads(e.Context); else if (mode == Mode.Foundation) DrawFoundation(e.Context); };
             sketch.ActiveLevelChanged += (s, e) => { if (mode == Mode.Loads) { loadsLevelId = sketch.ActiveLevel?.Id; selectedZone = -1; UpdateLevelBar(); RefreshSide(); } };
-            view3D.Extra = b => Foundation3D();
+            view3D.Extra = b => fbId != null ? FreeBody3D() : Foundation3D();
+            view3D.Picked += Picked3D;
+            view3D.PickScreen = Pick3DAt;
 
             PreviewKeyDown += (s, e) =>
             {
@@ -369,7 +376,8 @@ namespace LoadManager.App
                 var input = ws.BuildingFor(B);
                 var r = WindAnalysis.Run(ws.Edition, ws.ToParameters(), input.Building);
                 var box = B.Envelope().Bounds;
-                windCases = RoofWind.Mwfrs(box, r.MwfrsAlongLength, r.MwfrsAlongWidth);
+                // the wind calculator's own wind cases, each as it made it (its setup's procedure and Fig. 27.3-8 exception)
+                windCases = RoofWind.Cases(box, WindCases.For(r, ws.OnlyCases1And3), r.MwfrsAlongLength?.Edition?.Name);
                 var cc = r.Cladding;
                 cladding = a => RoofWind.Cladding(box, cc, a);
             }
@@ -395,6 +403,10 @@ namespace LoadManager.App
             lateral = LateralSection.Read(B);
             foundation = FoundationAnalysis.Run(B, s, uplift, lateral, method);
             FoundationScales();
+            // the same combination by name after a change (the list changes with the method and the loads); else the envelope
+            combo3D = combo3D == null ? null : foundation.Cases.FirstOrDefault(c => c.Name == combo3D.Name);
+            RefreshFreeBody();
+            Title3D();
             if (selectedZone >= (s.Zones?.Count ?? 0)) selectedZone = -1;
             if (selectedWall != null && B.Find(selectedWall) == null) selectedWall = null;
             if (selectedPoint != null) selectedPoint = foundation.AllPoints.FirstOrDefault(p => p.From == selectedPoint.From);
@@ -404,7 +416,9 @@ namespace LoadManager.App
             diagram.Highlight = selectedPoint;
             diagram.Show(foundation.Walls.FirstOrDefault(w => w.Id == selectedWall), selectedWall == null ? null : DiagramTitle());
             sketch.Refresh();
-            legend3D.Text = $"The foundation's loads, {MethodName} envelope, under the building drawn see-through. Blue plates along the footings: the most line load down ({1.6 * lineDepthFt:0.#} ft tall for {maxLine:N0} plf); vermilion under them: the most up where a footing lifts. Arrows: point loads down (blue, {2.2 * Math.Max(4, lineDepthFt * 2):0} ft long for {maxPoint:N0} lb) and up (vermilion). The numbers are on the Foundation plan.";
+            legend3D.Text = $"The foundation's loads, under the building drawn see-through (the footings grey). Blue, on top of the footings: the loads from above, " +
+                            $"arrows the way each acts (down; up where it lifts, beside it). Red, under the footings: the reactions, equal and opposite. " +
+                            $"Line loads are rows of light arrows, their tails joined ({1.6 * lineDepthFt:0.#} ft tall for {maxLine:N0} plf); point loads are single full-colour arrows ({2.2 * Math.Max(4, lineDepthFt * 2):0} ft long for {maxPoint:N0} lb). The numbers are on the Foundation plan.";
             if (view3D.Visibility == Visibility.Visible) view3D.Show(B);
         }
 
@@ -422,7 +436,8 @@ namespace LoadManager.App
             levelBox.Visibility = m == Mode.Loads ? Visibility.Visible : Visibility.Collapsed;
             diagramBox.Visibility = m == Mode.Foundation ? Visibility.Visible : Visibility.Collapsed;
             view3D.Visibility = plan ? Visibility.Collapsed : Visibility.Visible;
-            legend3D.Visibility = view3D.Visibility;
+            legend3D.Visibility = fb == null ? view3D.Visibility : Visibility.Collapsed;
+            title3DBox.Visibility = view3D.Visibility;
             ((FrameworkElement)sketch.Parent).Visibility = plan ? Visibility.Visible : Visibility.Collapsed;
             if (m == Mode.Loads)
             {

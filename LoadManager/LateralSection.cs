@@ -47,7 +47,8 @@ namespace LoadManager
         [DataMember(Order = 2)] public string Saved { get; set; }
         /// <summary>The model's revision it was found on (the file's revision after that save).</summary>
         [DataMember(Order = 3)] public int ModelRevision { get; set; }
-        /// <summary>The load cases, in order.</summary>
+        /// <summary>The load cases, in order: the wind calculator's own case names (the load manager takes everything else about
+        /// each case, its direction and roof pressures, from the wind calculator). A "From" map in files saved before is ignored.</summary>
         [DataMember(Order = 4)] public List<string> Cases { get; set; } = new List<string>();
         [DataMember(Order = 5)] public List<LateralPoint> Points { get; set; } = new List<LateralPoint>();
         /// <summary>How the forces were found, in a sentence (shown with them).</summary>

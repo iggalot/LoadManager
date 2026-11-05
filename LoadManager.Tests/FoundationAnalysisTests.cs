@@ -72,7 +72,8 @@ namespace LoadManager.Tests
             var asd = FoundationAnalysis.Run(b, sec, up, null, DesignMethod.Asd).Walls.Single(x => x.Id == s.Id);
             Assert.AreEqual(-180, asd.Segments[0].Load.WindMin, Tol);
             Assert.AreEqual(6, asd.Line.Min, Tol);
-            Assert.AreEqual("0.6D + 0.6W", asd.Line.MinBy.Name);
+            Assert.AreEqual("0.6D + 0.6W", asd.Line.MinBy.Combination.Name);
+            Assert.AreEqual("uniform", asd.Line.MinBy.Wind.Name);
             Assert.AreEqual(310, asd.Line.Max, Tol);
             var lrfd = FoundationAnalysis.Run(b, sec, up, null, DesignMethod.Strength).Walls.Single(x => x.Id == s.Id);
             Assert.AreEqual(-9, lrfd.Line.Min, Tol);
@@ -114,6 +115,103 @@ namespace LoadManager.Tests
             Assert.AreEqual(-1000, u.Envelope.Min, Tol);
             Assert.AreEqual(1000, u.Envelope.Max, Tol);
             Assert.IsNull(lat.Stale(b));
+        }
+
+        /// <summary>
+        /// Each of the wind calculator's cases on its own, the shear walls' forces in the case of the same name (no pairing). Roof: case
+        /// A 30 psf up (the S wall −6 × 30 = −180 plf), case B 10 psf up (−60 plf). A shear wall end at the S wall's start: case A
+        /// 1,000 lb up, case B 1,000 lb down. Two wind cases, A and B. ASD 0.6D + 0.6W on the footing: A 114 − 0.6 × 180 = 6 plf,
+        /// B 114 − 0.6 × 60 = 78 plf; the least 6, in case A. At the end: A 0.6 × −1000 = −600 lb, B +600 (D + 0.6W). Every
+        /// combination with W twice; one without W once. A saved shear wall case the calculator does not have ("Z") is left out,
+        /// with a note; without the calculator's cases, the shear walls' alone.
+        /// </summary>
+        /// <summary>
+        /// The whole chain on the 30 × 20 ft box: the wind calculator's own 212 cases (ASCE 7-16 Ch. 27) down the load path, the
+        /// foundation taking every one, by name, in its order; in Case 1 from W, roof Case A, +GCpi the S wall's footing is lifted
+        /// all along. The cases run in parallel give exactly what each gives alone. Prints the time taken (the load manager runs
+        /// this after every change).
+        /// </summary>
+        [TestMethod]
+        public void WindCases_FullChain_EveryCalculatorCase()
+        {
+            var b = OneStory(out var s);
+            var sec = LoadSection.Read(b);
+            var data = new ASCE7WindLoadCalculator.BuildingData { BuildingLength = 30, BuildingWidth = 20, BuildingHeight = 10, RoofType = ASCE7WindLoadCalculator.RoofTypes.ROOF_TYPE_FLAT, EnclosureType = ASCE7WindLoadCalculator.BuildingEnclosures.BLDG_ENCLOSED };
+            var w = ASCE7WindLoadCalculator.WindAnalysis.Run(ASCE7WindLoadCalculator.ASCE7_Versions.ASCE_VER_7_16, new ASCE7WindLoadCalculator.WindParameters_Base(), data);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var roof = RoofWind.Cases(new Rect2(0, 0, 30, 20), ASCE7WindLoadCalculator.WindCases.For(w));
+            var up = WindUplift.Run(b, sec, roof, null);
+            var r = FoundationAnalysis.Run(b, sec, up, null, DesignMethod.Asd);
+            watch.Stop();
+            System.Console.WriteLine($"212 cases: {watch.ElapsedMilliseconds} ms");
+            Assert.AreEqual(212, r.WindCases.Count);
+            CollectionAssert.AreEqual(roof.Select(c => c.Name).ToList(), r.WindCases.Select(c => c.Name).ToList());
+            var seg = r.Walls.Single(x => x.Id == s.Id).Segments;
+            var c1 = r.WindCases.Single(c => c.Name == "Case 1, from W, roof Case A, +GCpi");
+            Assert.IsTrue(seg.All(g => g.Load.Wind(c1.Name) < 0), "the roof lifts in that case");
+
+            // the cases run side by side give exactly what each gives on its own, in the calculator's order
+            for (int i = 0; i < roof.Count; i++)
+            {
+                Assert.AreSame(roof[i], up.Runs[i].Case);
+                var alone = GravityLoadPath.Uplift(b, sec, roof[i]);
+                foreach (var f in alone.Foundation.Where(x => x.IsWall))
+                {
+                    var g = up.Runs[i].Path.Foundation.Single(x => x.IsWall && x.Id == f.Id);
+                    foreach (var at in new[] { 0.1, f.Length / 2, f.Length - 0.1 })
+                        Assert.AreEqual(f.Profile.At(at).Wind, g.Profile.At(at).Wind, 0, $"{roof[i].Name}, {f.Id} at {at}");
+                }
+            }
+        }
+
+        [TestMethod]
+        public void WindCases_TheCalculatorsOwn_ShearWallsByName()
+        {
+            var b = OneStory(out var s);
+            var sec = LoadSection.Read(b);
+            var up = WindUplift.Run(b, sec, new[]
+            {
+                new RoofWindCase { Name = "A", From = "W", PressureAt = (x, y) => -30 },
+                new RoofWindCase { Name = "B", From = "S", PressureAt = (x, y) => -10 },
+            }, null);
+            var lat = new LateralSection
+            {
+                Source = "test", Cases = new List<string> { "A", "B", "Z" },
+                Points = { new LateralPoint { From = "SW1 end", WallId = s.Id, X = 0.2, Y = 0, Up = new Dictionary<string, double> { ["A"] = 1000, ["B"] = -1000, ["Z"] = 5000 } } },
+            };
+            var r = FoundationAnalysis.Run(b, sec, up, lat, DesignMethod.Asd);
+            CollectionAssert.AreEqual(new[] { "A", "B" }, r.WindCases.Select(w => w.Name).ToArray(), "the calculator's cases, each once, in its order");
+            Assert.AreEqual(0, r.WindCases.Single(w => w.Lateral == "A").Roof);
+            Assert.AreEqual(1, r.WindCases.Single(w => w.Lateral == "B").Roof);
+            Assert.IsTrue(r.Notes.Any(n => n.Contains("1 of the 3 shear wall cases") && n.Contains("\"Z\"")));
+            int withW = r.Combinations.Count(c => c.Has(LoadType.Wind));
+            Assert.AreEqual(2 * withW + (r.Combinations.Count - withW), r.Cases.Count);
+
+            var w0 = r.Walls.Single(x => x.Id == s.Id);
+            var seg = w0.Segments.Single();
+            var a = r.WindCases.Single(w => w.Lateral == "A");
+            var bb = r.WindCases.Single(w => w.Lateral == "B");
+            Assert.AreEqual(-180, seg.Load.Wind(a.Name), Tol);
+            Assert.AreEqual(-60, seg.Load.Wind(bb.Name), Tol);
+            var c06 = r.Cases.Where(c => c.Combination.Name == "0.6D + 0.6W").ToList();
+            Assert.AreEqual(6, seg.Combined[r.Cases.IndexOf(c06.Single(c => c.Wind == a))].Min, Tol);
+            Assert.AreEqual(78, seg.Combined[r.Cases.IndexOf(c06.Single(c => c.Wind == bb))].Min, Tol);
+            Assert.AreEqual(6, w0.Line.Min, Tol);
+            Assert.AreSame(a, w0.Line.MinBy.Wind);
+
+            var p = w0.Points.Single();
+            Assert.AreEqual(-1000, p.Load.Wind(a.Name), Tol);
+            Assert.AreEqual(1000, p.Load.Wind(bb.Name), Tol);
+            Assert.AreEqual(-600, p.Envelope.Min, Tol);
+            Assert.AreSame(a, p.Envelope.MinBy.Wind);
+            Assert.AreEqual(600, p.Envelope.Max, Tol);
+            Assert.AreSame(bb, p.Envelope.MaxBy.Wind);
+
+            Assert.AreEqual(-600, p.Envelope.Min, Tol, "Z (5,000 lb) is not a wind calculator case: left out");
+
+            var alone = FoundationAnalysis.Run(b, sec, null, lat, DesignMethod.Asd);
+            CollectionAssert.AreEqual(new[] { "A", "B", "Z" }, alone.WindCases.Select(w => w.Name).ToArray());
+            Assert.IsTrue(alone.WindCases.All(w => w.Roof < 0 && w.Lateral == w.Name));
         }
     }
 }

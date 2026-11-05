@@ -61,8 +61,17 @@ namespace LoadManager
         {
             var u = new WindUplift { RoofLevelId = b?.RoofLevel()?.Id };
             if (b == null) return u;
-            foreach (var c in mwfrs ?? Enumerable.Empty<RoofWindCase>())
-                u.Runs.Add((c, GravityLoadPath.Uplift(b, s, c)));
+            // each case down the load path on its own: they share nothing but the (read-only) building and loads, so they run side
+            // by side on the machine's cores, kept in the calculator's order
+            var cases = (mwfrs ?? Enumerable.Empty<RoofWindCase>()).ToList();
+            var paths = new GravityLoadPath.Result[cases.Count];
+            try { System.Threading.Tasks.Parallel.For(0, cases.Count, i => paths[i] = GravityLoadPath.Uplift(b, s, cases[i])); }
+            catch (AggregateException ex) when (ex.InnerExceptions.Count > 0)
+            {
+                // the first case's own exception, as a sequential run would have thrown it
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw();
+            }
+            for (int i = 0; i < cases.Count; i++) u.Runs.Add((cases[i], paths[i]));
             if (cladding == null || u.RoofLevelId == null) return u;
 
             // the rafters landing on each wall or beam at the roof, their span from the load path; one pass per area
