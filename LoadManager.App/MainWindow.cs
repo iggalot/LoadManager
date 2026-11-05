@@ -41,6 +41,8 @@ namespace LoadManager.App
 
         private ModelDocument doc;
         private string path;
+        /// <summary>This app's hold on the open project (one Load Manager per project).</summary>
+        private ProjectLock projectLock;
         private Mode mode = Mode.Loads;
         private string loadsLevelId;
 
@@ -182,7 +184,7 @@ namespace LoadManager.App
             };
             reloadTimer.Tick += (s, e) => { reloadTimer.Stop(); Reload(false); };
             Closing += (s, e) => { if (!ConfirmDiscard()) e.Cancel = true; };
-            Closed += (s, e) => watcher?.Dispose();
+            Closed += (s, e) => { watcher?.Dispose(); projectLock?.Dispose(); projectLock = null; };
 
             doc = new ModelDocument { Building = Building.New("No project") };
             sketch.SetBuilding(doc.Building, null);
@@ -203,10 +205,22 @@ namespace LoadManager.App
 
         public void Open(string file)
         {
+            // one Load Manager per project (the same project again keeps this app's own lock)
+            LockHolder heldBy = null;
+            var taken = projectLock != null && string.Equals(projectLock.ModelPath, file, StringComparison.OrdinalIgnoreCase)
+                ? projectLock : ProjectLock.TryTake(file, "loads", "Load Manager", out heldBy);
+            if (taken == null && heldBy != null)
+            {
+                MessageBox.Show(this, "This project is already open in another Load Manager: " + heldBy.Describe() + ".\n\nSwitch to that window, or close it first.",
+                                "Open", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
             try
             {
                 ProjectFolder.OpenFor(file);
                 var d = ModelFile.Load(file);
+                if (projectLock != taken) projectLock?.Dispose();
+                projectLock = taken;
                 doc = d;
                 path = file;
                 sketch.SetBuilding(d.Building, null);
@@ -222,6 +236,7 @@ namespace LoadManager.App
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidDataException || ex is System.Runtime.Serialization.SerializationException || ex is ArgumentException)
             {
+                if (taken != projectLock) taken?.Dispose();
                 Log.Warning("Project", "Could not open " + file, ex);
                 MessageBox.Show(this, "This file could not be opened.\n\n" + ex.Message, "Open", MessageBoxButton.OK, MessageBoxImage.Warning);
             }

@@ -17,6 +17,7 @@
   - Loads live only here (the `Loads` section), never in the BuildingModel classes.
   - The wind is the wind calculator's own `WindCases`, by name, one combination per case, never a range.
   - On save the app re-reads the file and replaces only `Loads`. Other apps' changes are kept.
+  - **One Load Manager per project:** it holds the `loads` project lock (`ProjectLock` in `BuildingModel.Core`).
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.
