@@ -156,17 +156,18 @@ namespace LoadManager.App
             root.Children.Add(center);
             Content = root;
 
-            // the plan is for looking and picking: its drawing tools never get a click, a key or typed text
+            // the plan is for looking and picking (the shared sketch's selection): its drawing tools never get a key or typed text
             sketch.Cursor = Cursors.Arrow;
             sketch.PreviewMouseLeftButtonDown += PlanDown;
             sketch.PreviewMouseMove += PlanMove;
             sketch.PreviewMouseLeftButtonUp += PlanUp;
+            InitPicking(); // the shared sketch picks: the walls, and this app's zones and foundation points
             sketch.PreviewMouseRightButtonDown += (s, e) => e.Handled = true;
             sketch.PreviewMouseRightButtonUp += (s, e) => e.Handled = true;
             sketch.PreviewTextInput += (s, e) => e.Handled = true;
             sketch.PreviewKeyDown += (s, e) => { if (!(e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.None)) e.Handled = true; };
             sketch.DrawOver += (s, e) => { if (mode == Mode.Loads) DrawLoads(e.Context); else if (mode == Mode.Foundation) DrawFoundation(e.Context); };
-            sketch.ActiveLevelChanged += (s, e) => { if (mode == Mode.Loads) { loadsLevelId = sketch.ActiveLevel?.Id; selectedZone = -1; UpdateLevelBar(); RefreshSide(); } };
+            sketch.ActiveLevelChanged += (s, e) => { if (mode == Mode.Loads) { loadsLevelId = sketch.ActiveLevel?.Id; sketch.ClearSelection(); UpdateLevelBar(); RefreshSide(); } };
             view3D.Extra = b => fbId != null ? FreeBody3D() : Foundation3D();
             view3D.Picked += Picked3D;
             view3D.PickScreen = Pick3DAt;
@@ -180,7 +181,8 @@ namespace LoadManager.App
                 else if (ctrl && e.Key == Key.Y) { Redo(); e.Handled = true; }
                 else if (e.Key == Key.Escape) { CancelZone(); Select(null, -1, null); e.Handled = true; }
                 else if (!ctrl && e.Key == Key.R && mode == Mode.Loads && !(Keyboard.FocusedElement is TextBox)) { StartZone(); e.Handled = true; }
-                else if (!ctrl && e.Key == Key.Delete && mode == Mode.Loads && selectedZone >= 0 && !(Keyboard.FocusedElement is TextBox)) { DeleteZone(selectedZone); e.Handled = true; }
+                else if (!ctrl && e.Key == Key.Delete && mode == Mode.Loads && selectedZones.Count > 0 && !(Keyboard.FocusedElement is TextBox)) { sketch.DeleteSelected(); e.Handled = true; } // the zones (the walls are the Building Model's)
+                else if (ctrl && e.Key == Key.A && mode != Mode.Foundation3D && !(Keyboard.FocusedElement is TextBox)) { sketch.HandleKey(Key.A, ModifierKeys.Control); e.Handled = true; }
             };
             reloadTimer.Tick += (s, e) => { reloadTimer.Stop(); Reload(false); };
             Closing += (s, e) => { if (!ConfirmDiscard()) e.Cancel = true; };
@@ -422,9 +424,7 @@ namespace LoadManager.App
             combo3D = combo3D == null ? null : foundation.Cases.FirstOrDefault(c => c.Name == combo3D.Name);
             RefreshFreeBody();
             Title3D();
-            if (selectedZone >= (s.Zones?.Count ?? 0)) selectedZone = -1;
-            if (selectedWall != null && B.Find(selectedWall) == null) selectedWall = null;
-            if (selectedPoint != null) selectedPoint = foundation.AllPoints.FirstOrDefault(p => p.From == selectedPoint.From);
+            sketch.Select(sketch.Selection.ToList()); // what is still there stays selected (an undo may have taken a zone or a wall)
             Title = $"{(string.IsNullOrEmpty(path) ? "No project" : Path.GetFileName(path))}{(Dirty ? " *" : "")} — Load Manager";
             UpdateLevelBar();
             RefreshSide();

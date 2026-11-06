@@ -25,51 +25,95 @@ namespace LoadManager.App
         private Point2 zoneTo;
         private bool showWallLoads = true;
 
-        private void Select(string wall, int zone, FoundationPoint point)
+        /// <summary>The walls picked together (two or more), and the zones (by index).</summary>
+        private List<string> selectedWalls = new List<string>();
+        private List<int> selectedZones = new List<int>();
+
+        // the Load Manager's own objects in the plan's selection (the shared sketch's: click, Shift+click, a window, Ctrl+A, Del)
+        private const string ZonePrefix = "zone:", PointPrefix = "point:";
+        private static string ZoneId(int i) => ZonePrefix + i;
+        private static string PointId(FoundationPoint p) => PointPrefix + p.From;
+        private static int ZoneIndex(string id) => id != null && id.StartsWith(ZonePrefix) && int.TryParse(id.Substring(ZonePrefix.Length), out int i) ? i : -1;
+        private FoundationPoint PointOf(string id) => id != null && id.StartsWith(PointPrefix) ? foundation?.AllPoints.FirstOrDefault(p => PointPrefix + p.From == id) : null;
+
+        /// <summary>What the plan's selection is, from the sketch's (the one selection mechanism of the suite).</summary>
+        private void FromSketchSelection()
         {
-            selectedWall = wall;
-            selectedZone = zone;
-            selectedPoint = point;
-            sketch.Select(wall == null ? null : new[] { wall });
-            diagram.Highlight = point;
-            diagram.Show(foundation?.Walls.FirstOrDefault(w => w.Id == wall), wall == null ? null : DiagramTitle());
+            var host = sketch.SelectedHostIds;
+            selectedWalls = sketch.SelectedOf<Wall>().Select(w => w.Id).OrderBy(x => x).ToList();
+            selectedZones = host.Select(ZoneIndex).Where(i => i >= 0).OrderBy(i => i).ToList();
+            var points = host.Select(PointOf).Where(p => p != null).ToList();
+            selectedPoint = points.Count == 1 && selectedWalls.Count <= 1 ? points[0] : null;
+            selectedWall = selectedWalls.Count == 1 ? selectedWalls[0] : selectedPoint?.WallId;
+            selectedZone = selectedZones.Count == 1 && selectedWalls.Count == 0 ? selectedZones[0] : -1;
+            diagram.Highlight = selectedPoint;
+            diagram.Show(foundation?.Walls.FirstOrDefault(w => w.Id == selectedWall), selectedWall == null ? null : DiagramTitle());
             RefreshSide();
             sketch.Refresh();
+        }
+
+        /// <summary>Selects one wall, zone or point (null / -1: none) in the plan, as a click does.</summary>
+        private void Select(string wall, int zone, FoundationPoint point)
+        {
+            var ids = new List<string>();
+            if (wall != null) ids.Add(wall);
+            if (zone >= 0) ids.Add(ZoneId(zone));
+            if (point != null) ids.Add(PointId(point));
+            sketch.Select(ids); // SelectionChanged: FromSketchSelection
         }
 
         // ------------------------------------------------------------------ picking on the plan
 
         private static Point2 Snap(Point2 p) => new Point2(Math.Round(p.X * 2) / 2, Math.Round(p.Y * 2) / 2);
 
+        /// <summary>
+        /// Drawing a zone takes the click; otherwise the shared sketch picks (a click, Shift+click or Ctrl+click, a window, Ctrl+A):
+        /// the walls, and this app's own zones and foundation points (<see cref="InitPicking"/>).
+        /// </summary>
         private void PlanDown(object sender, MouseButtonEventArgs e)
         {
-            e.Handled = true;   // never the sketch's own tools
             sketch.Focus();
-            var at = sketch.ToWorld(e.GetPosition(sketch));
-            if (mode == Mode.Loads && drawingZone)
+            if (!(mode == Mode.Loads && drawingZone)) return;
+            e.Handled = true;
+            zoneFrom = Snap(sketch.ToWorld(e.GetPosition(sketch)));
+            zoneTo = zoneFrom.Value;
+            sketch.CaptureMouse();
+        }
+
+        /// <summary>The shared sketch's selection, given this app's objects: walls only from the model; zones (Loads), points (Foundation).</summary>
+        private void InitPicking()
+        {
+            sketch.GeometryLocked = true; // the plan is for looking and picking: no grips, nothing moved
+            sketch.GeometryLockedMessage = "The building is edited in the Building Model.";
+            sketch.PickFilter = o => o is Wall;
+            sketch.HostPickFirst = true; // a foundation point stands on its wall: the point first
+            sketch.HostOwns = id => ZoneIndex(id) is int zi && zi >= 0 ? mode == Mode.Loads && zi < (LoadSection.Read(B).Zones?.Count ?? 0) : mode == Mode.Foundation && PointOf(id) != null;
+            sketch.HostPick = (at, tol) =>
             {
-                zoneFrom = Snap(at);
-                zoneTo = zoneFrom.Value;
-                sketch.CaptureMouse();
-                return;
-            }
-            double near = 8 / sketch.Zoom;
-            if (mode == Mode.Foundation && foundation != null)
+                if (mode == Mode.Foundation)
+                {
+                    var p = foundation?.AllPoints.Select(x => (x, d: Dist(x.Where, at))).Where(t => t.d <= 1.5 * tol).OrderBy(t => t.d).FirstOrDefault().x;
+                    return p == null ? null : PointId(p);
+                }
+                var lv = sketch.ActiveLevel;
+                if (lv == null) return null;
+                // a zone is an area: picked only off the walls (the walls come before it)
+                if (B.WallsUnder(lv).Any(w => ToSegment(at, w.Start, w.End) <= tol)) return null;
+                var zones = LoadSection.Read(B).Zones ?? new List<LoadZone>();
+                int zi = zones.Select((z, i) => (z, i)).Where(t => t.z.LevelId == lv.Id && t.z.IsValid && at.X >= t.z.X0 && at.X <= t.z.X1 && at.Y >= t.z.Y0 && at.Y <= t.z.Y1)
+                              .OrderBy(t => (t.z.X1 - t.z.X0) * (t.z.Y1 - t.z.Y0)).Select(t => t.i).DefaultIfEmpty(-1).First();
+                return zi < 0 ? null : ZoneId(zi);
+            };
+            sketch.HostInWindow = box =>
             {
-                var p = foundation.AllPoints.Select(x => (x, d: Dist(x.Where, at))).Where(t => t.d <= 1.5 * near).OrderBy(t => t.d).FirstOrDefault().x;
-                if (p != null) { Select(p.WallId ?? selectedWall, -1, p); return; }
-                var w = foundation.Walls.Select(x => (x, d: ToSegment(at, x.Start, x.End))).Where(t => t.d <= near).OrderBy(t => t.d).FirstOrDefault().x;
-                Select(w?.Id, -1, null);
-                return;
-            }
-            var lv = sketch.ActiveLevel;
-            if (lv == null) return;
-            var wall = B.WallsUnder(lv).Select(x => (x, d: ToSegment(at, x.Start, x.End))).Where(t => t.d <= near).OrderBy(t => t.d).FirstOrDefault().x;
-            if (wall != null) { Select(wall.Id, -1, null); return; }
-            var zones = LoadSection.Read(B).Zones ?? new List<LoadZone>();
-            int zi = zones.Select((z, i) => (z, i)).Where(t => t.z.LevelId == lv.Id && t.z.IsValid && at.X >= t.z.X0 && at.X <= t.z.X1 && at.Y >= t.z.Y0 && at.Y <= t.z.Y1)
-                          .OrderBy(t => (t.z.X1 - t.z.X0) * (t.z.Y1 - t.z.Y0)).Select(t => t.i).DefaultIfEmpty(-1).First();
-            Select(null, zi, null);
+                if (mode == Mode.Foundation)
+                    return (foundation?.AllPoints ?? Enumerable.Empty<FoundationPoint>()).Where(p => box.Contains(p.Where.X, p.Where.Y)).Select(PointId).ToList();
+                var lv = sketch.ActiveLevel;
+                return (LoadSection.Read(B).Zones ?? new List<LoadZone>()).Select((z, i) => (z, i))
+                    .Where(t => lv != null && t.z.LevelId == lv.Id && t.z.IsValid && box.Contains(t.z.X0, t.z.Y0) && box.Contains(t.z.X1, t.z.Y1)).Select(t => ZoneId(t.i)).ToList();
+            };
+            sketch.HostDeleteRequested += (s, ids) => DeleteZones(ids.Select(ZoneIndex).Where(i => i >= 0).ToList());
+            sketch.SelectionChanged += (s, e) => FromSketchSelection();
         }
 
         private void PlanMove(object sender, MouseEventArgs e)
@@ -82,8 +126,8 @@ namespace LoadManager.App
 
         private void PlanUp(object sender, MouseButtonEventArgs e)
         {
+            if (zoneFrom == null) return; // the sketch's own: the end of a window
             e.Handled = true;
-            if (zoneFrom == null) return;
             sketch.ReleaseMouseCapture();
             var a = zoneFrom.Value;
             zoneFrom = null;
@@ -124,13 +168,18 @@ namespace LoadManager.App
             sketch.Refresh();
         }
 
-        private void DeleteZone(int i)
+        private void DeleteZone(int i) => DeleteZones(new List<int> { i });
+
+        /// <summary>Deletes load zones (by index): one step to undo.</summary>
+        private void DeleteZones(List<int> which)
         {
             var zones = (LoadSection.Read(B).Zones ?? new List<LoadZone>()).ToList();
-            if (i < 0 || i >= zones.Count) return;
-            string name = zones[i].Name;
-            zones.RemoveAt(i);
-            if (Edit($"{name} deleted.", b => LoadSection.SetZones(b, zones))) Select(null, -1, null);
+            var gone = which.Where(i => i >= 0 && i < zones.Count).Distinct().OrderByDescending(i => i).ToList();
+            if (gone.Count == 0) return;
+            var names = gone.OrderBy(i => i).Select(i => zones[i].Name).ToList();
+            foreach (int i in gone) zones.RemoveAt(i);
+            string what = names.Count <= 3 ? string.Join(", ", names) : $"{names.Count} load zones";
+            if (Edit($"{what} deleted.", b => LoadSection.SetZones(b, zones))) Select(null, -1, null);
         }
 
         // ------------------------------------------------------------------ windows
@@ -190,19 +239,27 @@ namespace LoadManager.App
                 var b = new Button
                 {
                     Content = $"{z.Name}: {Loads(z.Load, "psf")}", HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 1, 0, 1),
-                    Background = k == selectedZone ? Ui.Checked : Brushes.White, BorderBrush = k == selectedZone ? Ui.CheckedEdge : Ui.Line,
+                    Background = selectedZones.Contains(k) ? Ui.Checked : Brushes.White, BorderBrush = selectedZones.Contains(k) ? Ui.CheckedEdge : Ui.Line,
                 };
-                b.Click += (o, e) => Select(null, k, null);
+                b.Click += (o, e) =>
+                {
+                    // Shift or Ctrl adds the zone to the selection (or takes it out), as on the plan
+                    if ((Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0) Select(null, k, null);
+                    else if (selectedZones.Contains(k)) sketch.Select(sketch.Selection.Where(x => x != ZoneId(k)).ToList());
+                    else sketch.Select(new[] { ZoneId(k) }, add: true);
+                };
                 side.Children.Add(b);
             }
             if (selectedZone >= 0 && selectedZone < zones.Count && zones[selectedZone].LevelId == lv.Id) ZoneEditor(zones, selectedZone);
+            else if (selectedZones.Count > 1) ZonesPanel(zones);
 
             // the selected wall
-            if (selectedWall != null && B.Find(selectedWall) is Wall w) WallPanel(w, lv);
+            if (selectedWalls.Count > 1) WallsPanel(selectedWalls.Select(B.Find).OfType<Wall>().ToList(), lv);
+            else if (selectedWall != null && B.Find(selectedWall) is Wall w) WallPanel(w, lv);
             else
             {
                 side.Children.Add(Head("Walls"));
-                side.Children.Add(Para("Click a wall to see what it carries, where it comes from, and to enter its top load by hand.", true));
+                side.Children.Add(Para("Click a wall to see what it carries, where it comes from, and to enter its top load by hand. Shift+click or drag a window to pick several: one top load for all.", true));
             }
             var cb = new CheckBox { Content = "Show each wall's top load on the plan", IsChecked = showWallLoads, Margin = new Thickness(0, 10, 0, 0) };
             cb.Click += (o, e) => { showWallLoads = cb.IsChecked == true; sketch.Refresh(); };
@@ -249,6 +306,61 @@ namespace LoadManager.App
                 if (!Edit($"{list[i].Name}: {list[i]}.", b => LoadSection.SetZones(b, list))) Say("No change.");
             }));
             buttons.Children.Add(Link("Delete", "Delete this zone (Del)", () => DeleteZone(i)));
+            side.Children.Add(buttons);
+        }
+
+        /// <summary>Several zones picked together: their names, and Delete them all (one step to undo).</summary>
+        private void ZonesPanel(List<LoadZone> zones)
+        {
+            var mine = selectedZones.Where(i => i < zones.Count).ToList();
+            side.Children.Add(Head($"{mine.Count} load zones selected"));
+            side.Children.Add(Para(string.Join(", ", mine.Select(i => zones[i].Name)) + ". Click one alone to edit its loads.", true));
+            side.Children.Add(Link($"Delete the {mine.Count} zones", "Delete every zone selected (Del)", () => DeleteZones(mine)));
+        }
+
+        /// <summary>
+        /// Several walls picked together: what each carries at this level, and one top load by hand for all of them (or cleared
+        /// on all of them): one step to undo.
+        /// </summary>
+        private void WallsPanel(List<Wall> walls, Level lv)
+        {
+            side.Children.Add(Head($"{walls.Count} walls selected"));
+            var s = LoadSection.Read(B);
+            var rows = new List<string[]> { new[] { "Wall", "D", "L", "Lr", "S" } };
+            foreach (var w in walls)
+            {
+                var g = loadPath != null && loadPath.TryGetValue(GravityLoadPath.Key(w.Id, lv.Id), out var r) ? r.Load : null;
+                bool hand = s.WallTop(w.Id, lv.Id) != null;
+                rows.Add(new[] { w.Id + (hand ? " (by hand)" : ""), $"{g?.Dead ?? 0:N0}", $"{g?.Live ?? 0:N0}", $"{g?.RoofLive ?? 0:N0}", $"{g?.Snow ?? 0:N0}" });
+            }
+            side.Children.Add(Para($"Top loads at {lv.Name} (plf):", true));
+            side.Children.Add(Mini(rows, new double[] { 130, 0, 0, 0, 0 }));
+
+            side.Children.Add(Head("Their top load by hand"));
+            side.Children.Add(Para("The same values for every wall selected, at this level. Clear them to use the load path again.", true));
+            var tops = walls.Select(w => s.WallTop(w.Id, lv.Id)).ToList();
+            var first = tops.FirstOrDefault(t => t != null);
+            bool same = first != null && tops.All(t => t != null && t.ToString() == first.ToString());
+            var boxes = new[] { NumberBox(same ? first.Dead : 0, "Walls top D"), NumberBox(same ? first.Live : 0, "Walls top L"),
+                                NumberBox(same ? first.RoofLive : 0, "Walls top Lr"), NumberBox(same ? first.Snow : 0, "Walls top S") };
+            var wp = new WrapPanel();
+            string[] sym = { "D", "L", "Lr", "S" };
+            for (int k = 0; k < 4; k++) { wp.Children.Add(new TextBlock { Text = sym[k], Width = 18, VerticalAlignment = VerticalAlignment.Center }); wp.Children.Add(boxes[k]); }
+            wp.Children.Add(new TextBlock { Text = "plf", Foreground = Ui.Muted, VerticalAlignment = VerticalAlignment.Center });
+            side.Children.Add(wp);
+            var buttons = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
+            buttons.Children.Add(Link($"Set on all {walls.Count}", "Use these values for the top of every wall selected", () =>
+            {
+                var v = new double[4];
+                bool ok = true;
+                for (int k = 0; k < 4; k++) ok &= Number(boxes[k], out v[k]);
+                if (!ok) { Say("Each value must be a number, 0 or more."); return; }
+                var load = new LineLoad { Dead = v[0], Live = v[1], RoofLive = v[2], Snow = v[3] };
+                if (!Edit($"{walls.Count} walls at {lv.Name}: top load by hand {load} plf.", b => { foreach (var w in walls) LoadSection.SetWallTop(b, w.Id, lv.Id, load); })) Say("No change.");
+            }));
+            if (tops.Any(t => t != null))
+                buttons.Children.Add(Link("Clear on all (use the load path)", "Remove the entered values of every wall selected", () =>
+                    Edit($"{walls.Count} walls at {lv.Name}: top loads by hand cleared (the load path's apply).", b => { foreach (var w in walls) LoadSection.SetWallTop(b, w.Id, lv.Id, null); })));
             side.Children.Add(buttons);
         }
 
@@ -323,7 +435,7 @@ namespace LoadManager.App
                 var z = zones[i];
                 if (z.LevelId != lv.Id || !z.IsValid) continue;
                 var r = sketch.ScreenRect(new Rect2(z.X0, z.Y0, z.X1, z.Y1));
-                ctx.DrawRectangle(fill, i == selectedZone ? edgeSel : edge, r);
+                ctx.DrawRectangle(fill, selectedZones.Contains(i) ? edgeSel : edge, r);
                 sketch.Label(ctx, $"{z.Name}: {Loads(z.Load, "psf")}", new Point(r.Left + 6, r.Top + 12), ink, 10.5);
             }
             if (zoneFrom != null)

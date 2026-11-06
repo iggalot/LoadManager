@@ -87,7 +87,10 @@ namespace LoadManager.App
             side.Children.Add(Para($"{lines.Count} wall footings, {points.Count} point loads ({points.Count(p => p.Kind == FoundationPointKind.Column)} columns, {points.Count(p => p.HasLateral)} at shear wall ends). " +
                                    $"{lines.Count(w => w.Line.Lifts)} footings and {points.Count(p => p.Envelope.Lifts)} points are lifted in some combination.", true));
 
-            // the selection
+            // the selection (several picked: say so; one at a time shows its loads and diagram)
+            int picked = sketch.Selection.Count;
+            if (picked > 1 && selectedPoint == null && selectedWalls.Count != 1)
+                side.Children.Add(Para($"{picked} selected: click one wall or point alone to see its loads and diagram.", true));
             if (selectedPoint != null) PointPanel(selectedPoint);
             var wall = foundation.Walls.FirstOrDefault(w => w.Id == selectedWall);
             if (wall != null) WallFoundationPanel(wall);
