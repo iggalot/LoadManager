@@ -85,17 +85,79 @@ namespace LoadManager.Tests
             var fb = FreeBody.Of(b, s, null, bm.Id);
             Assert.AreEqual("beam", fb.Kind);
             var dl = LoadCombinations.Asd().First(x => x.Name == "D + L");
-            Assert.AreEqual(17000, fb.Total(FreeBodyPart.External, dl), Tol);
-            Assert.AreEqual(17000, fb.Total(FreeBodyPart.Support, dl), Tol);
+            // E the floor; I the wall standing on it (its reaction where the beam is cut from it) and the columns under its ends
+            Assert.AreEqual(17000, fb.Forces.Where(f => !f.Up).Sum(f => f.Resultant(dl)), Tol);
+            Assert.IsTrue(fb.Of(FreeBodyPart.External).Any() && fb.Of(FreeBodyPart.Internal).Any(f => !f.Up && f.Other != null), "the floor E, the wall on it I");
+            Assert.AreEqual(17000, fb.HeldUp(dl), Tol);
             Assert.AreEqual(0, fb.Imbalance(dl), Tol);
-            Assert.AreEqual(2, fb.Of(FreeBodyPart.Support).Count());
+            Assert.AreEqual(2, fb.Of(FreeBodyPart.Internal).Count(f => f.Up), "its ends on the columns: I, the columns' reactions");
+            Assert.IsFalse(fb.Of(FreeBodyPart.Support).Any(), "nothing of the foundation's on a beam");
             Assert.AreEqual(0, fb.Total(FreeBodyPart.Weight, dl), Tol);
 
             var fc = FreeBody.Of(b, s, null, c1.Id);
-            Assert.AreEqual(2500, fc.Of(FreeBodyPart.External).Single().Load.Dead, Tol);
-            Assert.AreEqual(10, fc.Of(FreeBodyPart.External).Single().Z, Tol);
-            Assert.AreEqual(2500, fc.Of(FreeBodyPart.Support).Single().Load.Dead, Tol);
+            Assert.AreEqual(2500, fc.Of(FreeBodyPart.Internal).Single().Load.Dead, Tol, "the beam's end on it: I");
+            Assert.AreEqual(bm.Id, fc.Of(FreeBodyPart.Internal).Single().Other);
+            Assert.AreEqual(10, fc.Of(FreeBodyPart.Internal).Single().Z, Tol);
+            Assert.AreEqual(2500, fc.Of(FreeBodyPart.Support).Single().Load.Dead, Tol, "the foundation under it: S");
             Assert.IsTrue(fc.Combinations(DesignMethod.Asd).All(x => System.Math.Abs(fc.Imbalance(x)) < Tol));
+
+            // the beam and the column together: the beam's start on the column is a pair inside the body, both halves cancel
+            var both = FreeBody.OfBody(b, s, null, new[] { bm.Id, c1.Id });
+            Assert.AreEqual("body", both.Kind);
+            Assert.AreEqual(2, both.InsideForces.Count(), "the beam's start reaction and its load on the column");
+            Assert.AreEqual(0, both.Imbalance(dl), Tol);
+            Assert.AreEqual(17000, both.HeldUp(dl), Tol, "held up by the foundation under the column and the other column");
+            Assert.AreEqual(1, both.Of(FreeBodyPart.Support).Count());
+            Assert.AreEqual(1, both.Of(FreeBodyPart.Internal).Count(f => f.Up), "the beam's end on the other column: the cut");
+        }
+
+        /// <summary>
+        /// The two-story box of <see cref="BeamAndColumn_Balance"/>: the wall on Level 2 over the ground's wall. Alone, the
+        /// lower wall is cut from the upper (I, down onto it); alone, the upper is cut from the lower (I, up under it); both
+        /// together, the pair is inside: E, W and the foundation's S only, in equilibrium. All selected: the whole structure.
+        /// </summary>
+        [TestMethod]
+        public void StackedWalls_TheCutMovesWithTheSelection()
+        {
+            var b = Building.New("Two");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            var lo = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
+            var up = b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10, RoofLive = 20 });
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10, Live = 40 });
+            LoadSection.SetWallDead(b, 10);
+            var s = LoadSection.Read(b);
+            var d = LoadCombinations.Asd().First(x => x.Name == "D");
+
+            var lower = FreeBody.Of(b, s, null, lo.Id);
+            var onIt = lower.Of(FreeBodyPart.Internal).Single();
+            Assert.AreEqual(up.Id, onIt.Other);
+            Assert.IsFalse(onIt.Up, "the upper wall bears down on it");
+            Assert.AreEqual(0, lower.Imbalance(d), Tol);
+
+            var upper = FreeBody.Of(b, s, null, up.Id);
+            var under = upper.Of(FreeBodyPart.Internal).Single();
+            Assert.AreEqual(lo.Id, under.Other);
+            Assert.IsTrue(under.Up, "the lower wall holds it up");
+            Assert.IsFalse(upper.Of(FreeBodyPart.Support).Any(), "not on the foundation");
+            Assert.AreEqual(onIt.Resultant(d), under.Resultant(d), Tol, "equal and opposite");
+
+            var stack = FreeBody.OfBody(b, s, null, new[] { lo.Id, up.Id });
+            Assert.AreEqual(2, stack.InsideForces.Count());
+            Assert.IsFalse(stack.Of(FreeBodyPart.Internal).Any(), "nothing cut: E, W and S only");
+            Assert.AreEqual(0, stack.Imbalance(d), Tol);
+            Assert.AreEqual(lower.Total(FreeBodyPart.Support, d), stack.Total(FreeBodyPart.Support, d), Tol, "the foundation holds the stack");
+
+            var all = FreeBody.OfBody(b, s, null, b.Walls.Select(w => w.Id));
+            Assert.IsFalse(all.Of(FreeBodyPart.Internal).Any(), "the whole structure: no cut");
+            Assert.AreEqual(0, all.Imbalance(d), Tol);
         }
     }
 }

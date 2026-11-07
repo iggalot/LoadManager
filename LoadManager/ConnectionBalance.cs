@@ -17,6 +17,13 @@ namespace LoadManager
         /// <summary>Wind case → the sum of the reactions on the foundation (lb, + up): 0 for the overturning couples alone.</summary>
         public Dictionary<string, double> OnFoundation { get; } = new Dictionary<string, double>();
         public List<FoundationProblem> Problems { get; } = new List<FoundationProblem>();
+        /// <summary>
+        /// The whole structure as one body (every member the wind is on): the pairs between its members inside it, the
+        /// foundation's reactions its supports. Null when there is nothing to check.
+        /// </summary>
+        public FreeBody Whole { get; set; }
+        /// <summary>Why the whole structure does not balance the wind (null: it does, in every case).</summary>
+        public string WholeOutOfBalance { get; set; }
         /// <summary>The lateral design was saved before it kept the cases: nothing to check.</summary>
         public bool NoCases { get; set; }
     }
@@ -69,6 +76,10 @@ namespace LoadManager
                               $"{fb.Shears.Count(s => s.Part == FreeBodyPart.External)} wind shears on it).",
                 });
             }
+            r.Whole = FreeBody.WindOnly(b, ids, lateral, r.Pairs);
+            r.WholeOutOfBalance = r.Whole == null ? null : r.Cases.Select(r.Whole.WindOutOfBalance).FirstOrDefault(x => x != null);
+            if (r.WholeOutOfBalance != null)
+                r.Problems.Add(new FoundationProblem { Id = null, Message = $"The whole structure does not balance the wind: {r.WholeOutOfBalance}." });
             return r;
         }
     }

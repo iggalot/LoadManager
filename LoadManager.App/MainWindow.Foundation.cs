@@ -370,6 +370,7 @@ namespace LoadManager.App
         /// <summary>The side panel's list of every combination for the 3D view, the envelope first; the arrow keys step through it.</summary>
         private void Foundation3DSide()
         {
+            FreeBodyPickSide();
             side.Children.Add(Head("Drawn in 3D"));
             var all = foundation.Cases;
             comboList = new ListBox { MaxHeight = 420, Margin = new Thickness(0, 0, 0, 6), BorderBrush = Ui.Line };

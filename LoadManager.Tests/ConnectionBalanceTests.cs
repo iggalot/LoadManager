@@ -64,12 +64,20 @@ namespace LoadManager.Tests
             var lower = r.Bodies.Single(x => x.Id == w1.Id);
             var fromAbove = lower.Connections.Where(c => !c.Own).ToList();
             Assert.AreEqual(2, fromAbove.Count);
-            Assert.IsTrue(fromAbove.All(c => c.Part == FreeBodyPart.External), "W2's on W1: external to W1");
+            Assert.IsTrue(fromAbove.All(c => c.Part == FreeBodyPart.Internal), "W2's on W1: internal, where W1 is cut from W2");
             Assert.AreEqual(500, fromAbove.Single(c => c.Pair.From.EndsWith("west end")).On("C"), 1e-9, "the other half of the pair: W2's tension pulls W1 up");
             // ΣM: 500 × 0.25 − 500 × 20.25 − 1500 × 0.25 + 1500 × 20.25 − 2000 × 10 = 0
             Assert.AreEqual(0, lower.WindMomentImbalance("C"), 1e-6);
             Assert.AreEqual(0, lower.WindImbalance("C"), 1e-9);
             Assert.AreEqual(0, lower.WindShearImbalance("C"), 1e-9, "the sill takes the wind");
+
+            // the whole structure, one body: W2 on W1 inside it (both halves, cancelling), the foundation's its supports
+            Assert.IsNull(r.WholeOutOfBalance);
+            Assert.AreEqual(4, r.Whole.Connections.Count(c => c.Inside), "the two pairs between W2 and W1, both halves");
+            Assert.AreEqual(2, r.Whole.Connections.Count(c => !c.Inside && c.Part == FreeBodyPart.Support), "W1 on the foundation");
+            Assert.IsFalse(r.Whole.Connections.Any(c => !c.Inside && c.Part == FreeBodyPart.Internal), "nothing cut");
+            // W2 alone is cut from W1: its hold-downs are I
+            Assert.IsTrue(upper.Connections.All(c => c.Part == FreeBodyPart.Internal && !c.Inside));
         }
 
         [TestMethod]
@@ -78,9 +86,11 @@ namespace LoadManager.Tests
             var (b, lat, w1, _) = TwoStories();
             lat.Holdowns[1].Up["C"] = -1000;   // W1's east end presses 1000, not 1500
             var r = ConnectionBalance.Run(b, lat);
-            var p = r.Problems.Single();
+            var p = r.Problems.Single(x => x.Id != null);
+            Assert.IsNotNull(r.WholeOutOfBalance, "the whole structure does not balance either");
+            Assert.AreEqual(2, r.Problems.Count);
             Assert.AreEqual(w1.Id, p.Id);
-            StringAssert.Contains(p.Message, "ΣFy = -500 lb in C");
+            StringAssert.Contains(p.Message, "ΣFz = -500 lb in C");
             Assert.IsFalse(r.Balanced.Contains(w1.Id));
         }
 

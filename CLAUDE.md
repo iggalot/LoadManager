@@ -26,13 +26,17 @@
   `Analyze` (the load path, the uplift, `FoundationAnalysis`), `Run` (all of it, with given shear wall forces). The window
   uses `RoofWindOf` and `Analyze`; the hub uses `Run`. Uplift is a flag for the foundation design, not a fault. Stale shear
   wall forces: `ModelFingerprint.ChangedFromModel(lateral.BasedOn, b)`.
-- **Free bodies are WISE, for the gravity and the wind alike** (owner): `FreeBody` (W weight, I internal at cuts, S
-  supports, E applied). The wind is an external load and is never dropped. `FreeBody.Connections` and `Shears` are the
-  wind's side, per wind case: E the wind's shear on a wall's top (`ShearWallDesign.ShearOnTop`) and the connections of the
-  members standing on it, S its own hold-downs, compression posts and sill. Every connection is a pair of equal and
-  opposite forces (`ConnectionPairs` in `BuildingModel.Core`, from SWC's `Lateral.Holdowns`); which side is I, S or E
-  depends only on the body's boundary. `ConnectionBalance` checks every member in every case (ΣFx, ΣFy, ΣM:
-  `FreeBody.WindOutOfBalance`, one rule for the check and the window); `FoundationCheck.Run` includes it.
+- **Free bodies are WISE, for the gravity and the wind alike, and the body is the selection** (owner): `FreeBody.OfBody`
+  of the selected members. W the weight; E the loads applied (the floors, the roof, the wind: never dropped); S the
+  foundation; I where the body is cut: the reaction of every member connected to it that is not selected (a wall under
+  it or standing on it, a beam end, a column base). A connection between two selected members is a pair inside the body
+  (`Inside`): its halves cancel, out of the sums, drawn only with the internal forces shown. Every force knows the member
+  at its other end (`Other`; the load path records it: `ConcentratedLoad.Source` and `Onto`, `WallTopLoad.AboveParts`).
+  The wind's side (`Connections`, `Shears`) is per wind case, from SWC's `Lateral` (`ConnectionPairs` in
+  `BuildingModel.Core`). `ConnectionBalance` checks every member and the whole structure in every case (ΣF, ΣM about three
+  axes: `FreeBody.WindOutOfBalance`, one rule for the check and the window); `FoundationCheck.Run` includes it. In the
+  window: Ctrl or Shift + click members in the 3D foundation for one body; View > Internal forces is the plans' and the
+  free bodies' one setting.
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.

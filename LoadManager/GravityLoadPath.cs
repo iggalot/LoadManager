@@ -16,6 +16,10 @@ namespace LoadManager
         public PointLoad Load { get; set; } = new PointLoad();
         /// <summary>What brings it ("BM1", "C2"), and the wall it came down through when it came from above ("BM1 via W7").</summary>
         public string From { get; set; }
+        /// <summary>The member it comes straight from: the wall whose post it is, the beam whose end, the column whose base (the other end of its pair).</summary>
+        public string Source { get; set; }
+        /// <summary>A post at the bottom of a wall: the member it lands on (null: nothing drawn, or the foundation).</summary>
+        public string Onto { get; set; }
 
         public override string ToString() => $"{From} at {At:0.##} ft: {Load}";
     }
@@ -47,6 +51,8 @@ namespace LoadManager
         public double FramingSpan { get; set; }
         /// <summary>The walls standing on it ("W7").</summary>
         public List<string> Above { get; } = new List<string>();
+        /// <summary>Each wall standing on it (its id): what it brings down onto this wall, along this wall (from its start), with its weight.</summary>
+        public Dictionary<string, LoadProfile> AboveParts { get; } = new Dictionary<string, LoadProfile>();
         /// <summary>The load zones its tributary strip reaches ("Deck").</summary>
         public List<string> Zones { get; } = new List<string>();
         /// <summary>Beam ends and columns landing on it, here or on a wall above that stands on it (each needs a post).</summary>
@@ -125,6 +131,8 @@ namespace LoadManager
     {
         public string LevelId { get; set; }
         public string From { get; set; }
+        /// <summary>The member it comes straight from (a beam, a column, a wall).</summary>
+        public string Source { get; set; }
         public PointLoad Load { get; set; } = new PointLoad();
     }
 
@@ -199,6 +207,7 @@ namespace LoadManager
             public Point2 Where;
             public PointLoad Load;
             public string From;
+            public string Source;
         }
 
         /// <summary>A beam's direction: square to the plan when its ends are within <see cref="Bearing"/> of one line (drawn by hand).</summary>
@@ -272,7 +281,7 @@ namespace LoadManager
                     var cl = Col(c.Id);
                     cl.BaseOn = SupportOf(c.At, null, c.Id);
                     if (cl.BaseOn == null) result.Notes.Add($"{c.Id} stands on nothing drawn at {lv.Name}: what it carries is not traced down.");
-                    else if (!cl.Load.IsEmpty) landings.Add(new Landing { Target = cl.BaseOn, Where = c.At, Load = cl.Load, From = c.Id });
+                    else if (!cl.Load.IsEmpty) landings.Add(new Landing { Target = cl.BaseOn, Where = c.At, Load = cl.Load, From = c.Id, Source = c.Id });
                 }
 
                 // (a2) the concentrated loads in the walls standing on this level go down to one support each: the nearest wall or
@@ -287,8 +296,9 @@ namespace LoadManager
                         var to = onLine.Where(l => DistanceToSegment(p.Where, l.Start, l.End) <= Bearing)
                                        .OrderBy(l => DistanceToSegment(p.Where, l.Start, l.End)).ThenBy(l => l.IsBeam).ThenBy(l => l.Id).FirstOrDefault()?.Id
                                  ?? SupportOf(p.Where, null, null);
+                        p.Onto = to;
                         if (to == null) result.Notes.Add($"{p.From} on {a.Id} at ({p.Where.X:0.##}, {p.Where.Y:0.##}): nothing drawn under it at {lv.Name}, not traced down.");
-                        else landings.Add(new Landing { Target = to, Where = p.Where, Load = p.Load, From = Via(p.From, a.Id) });
+                        else landings.Add(new Landing { Target = to, Where = p.Where, Load = p.Load, From = Via(p.From, a.Id), Source = a.Id });
                     }
                 }
 
@@ -331,13 +341,13 @@ namespace LoadManager
                         r.Partials.Add(new PartialLoad { From = a.Id, A = o0, B = o1, Load = ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) } });
                     }
                     foreach (var g in landings.Where(g => g.Target == m.Id))
-                        r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From });
+                        r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From, Source = g.Source });
                     Reactions(r);
                     r.StartOn = ends[m.Id].start; r.EndOn = ends[m.Id].end;
                     foreach (var (on, pt, R, which) in new[] { (r.StartOn, m.Start, r.StartReaction, "start"), (r.EndOn, m.End, r.EndReaction, "end") })
                     {
                         if (on == null) { r.Notes.Add($"Nothing drawn under its {which} ({pt.X:0.##}, {pt.Y:0.##}): its reaction is not traced down."); continue; }
-                        if (!R.IsEmpty) landings.Add(new Landing { Target = on, Where = pt, Load = R, From = m.Id });
+                        if (!R.IsEmpty) landings.Add(new Landing { Target = on, Where = pt, Load = R, From = m.Id, Source = m.Id });
                     }
                 }
 
@@ -384,12 +394,13 @@ namespace LoadManager
                             var part = ar.Profile.Moved(x => Along(me, la < 1e-9 ? wa.Start : new Point2(wa.Start.X + (wa.End.X - wa.Start.X) * x / la, wa.Start.Y + (wa.End.Y - wa.Start.Y) * x / la)), o0, o1)
                                          .Plus(LoadProfile.Uniform(o0, o1, new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) }));
                             aboveProfile = aboveProfile.Combine(part, Most);
+                            r.AboveParts[a.Id] = part;
                             r.Above.Add(a.Id);
                         }
                     }
                     foreach (var g in landings.Where(g => g.Target == w.Id))
                     {
-                        var here = new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From };
+                        var here = new ConcentratedLoad { Where = g.Where, Load = g.Load, From = g.From, Source = g.Source };
                         r.Points.Add(here);
                         r.Here.Add(here);
                     }
@@ -410,7 +421,7 @@ namespace LoadManager
                     var cl = Col(g.Target);
                     cl.Load = cl.Load + g.Load;
                     cl.From.Add($"{g.From} at {lv.Name}");
-                    cl.Landings.Add(new ColumnLanding { LevelId = lv.Id, From = g.From, Load = g.Load });
+                    cl.Landings.Add(new ColumnLanding { LevelId = lv.Id, From = g.From, Load = g.Load, Source = g.Source });
                 }
 
                 // walls standing on this level with no wall or beam under them

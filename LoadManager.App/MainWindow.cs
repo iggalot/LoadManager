@@ -106,6 +106,11 @@ namespace LoadManager.App
             Item(view, "Foundation _3D", null, () => SetMode(Mode.Foundation3D));
             view.Items.Add(new Separator());
             Item(view, "_Zoom to the drawing", "Z", () => sketch.ZoomExtents());
+            view.Items.Add(new Separator());
+            var internalForces = sketch.InternalForcesMenuItem();
+            // one setting for the plans and the free bodies
+            internalForces.Click += (s, e) => { Title3D(); RefreshSide(); if (view3D.Visibility == Visibility.Visible) view3D.Show(B); };
+            view.Items.Add(internalForces);
 
             var bar = new DockPanel { LastChildFill = false };
             bar.Children.Add(new TextBlock { Text = "Load Manager", FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 12, 0) });
@@ -166,7 +171,7 @@ namespace LoadManager.App
             sketch.PreviewKeyDown += (s, e) => { if (!(e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.None)) e.Handled = true; };
             sketch.DrawOver += (s, e) => { if (mode == Mode.Loads) DrawLoads(e.Context); else if (mode == Mode.Foundation) DrawFoundation(e.Context); };
             sketch.ActiveLevelChanged += (s, e) => { if (mode == Mode.Loads) { loadsLevelId = sketch.ActiveLevel?.Id; sketch.ClearSelection(); UpdateLevelBar(); RefreshSide(); } };
-            view3D.Extra = b => fbId != null ? FreeBody3D() : Foundation3D();
+            view3D.Extra = b => fb != null ? FreeBody3D() : Foundation3D();
             view3D.Picked += Picked3D;
             view3D.PickScreen = Pick3DAt;
 
