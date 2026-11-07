@@ -31,7 +31,7 @@ namespace LoadManager.App
 
         private void OpenFreeBody(string id)
         {
-            var body = FreeBody.Of(B, LoadSection.Read(B), loadPath, id);
+            var body = FreeBody.Of(B, LoadSection.Read(B), loadPath, id, lateral);
             if (body == null) { status.Text = $"{id}: not a wall, beam or column the load path knows."; return; }
             fbId = id;
             fb = body;
@@ -61,7 +61,7 @@ namespace LoadManager.App
         private void RefreshFreeBody()
         {
             if (fbId == null) return;
-            var body = FreeBody.Of(B, LoadSection.Read(B), loadPath, fbId);
+            var body = FreeBody.Of(B, LoadSection.Read(B), loadPath, fbId, lateral);
             if (body == null) { fbId = null; fb = null; view3D.Only = null; fbCombo = null; return; }
             fb = body;
             string was = fbCombo?.Name;
@@ -148,7 +148,68 @@ namespace LoadManager.App
             fbTable = new StackPanel();
             side.Children.Add(fbTable);
             RefreshFreeBodyTable();
+            FreeBodyWindSide();
             foreach (var n in fb.Notes) side.Children.Add(Para("• " + n, true));
+        }
+
+        /// <summary>The wind case the free body's wind forces are listed in.</summary>
+        private string fbWindCase;
+        private StackPanel fbWindTable;
+
+        /// <summary>
+        /// The wind on the free body and what holds it against the wind, in one wind case at a time, by WISE (the lateral
+        /// design's forces, W at strength level): E the wind's shear on its top and the connections of the members standing on
+        /// it, S its own hold-downs, compression posts and sill; ΣFx, ΣFy and ΣM.
+        /// </summary>
+        private void FreeBodyWindSide()
+        {
+            var cases = fb.WindCases;
+            side.Children.Add(Head("Wind"));
+            fbWindTable = null;
+            if (cases.Count == 0)
+            {
+                side.Children.Add(Para(lateral == null
+                    ? "No shear wall design saved (the shear wall app's Lateral section): no wind forces on it yet."
+                    : "No wind forces on it in the shear wall design (not a shear wall, and no hold-down lands on it).", true));
+                return;
+            }
+            if (!cases.Contains(fbWindCase)) fbWindCase = cases[0];
+            var pick = new ComboBox { Margin = new Thickness(0, 0, 0, 4) };
+            foreach (var c in cases) pick.Items.Add(c);
+            pick.SelectedItem = fbWindCase;
+            pick.SelectionChanged += (s, e) => { fbWindCase = pick.SelectedItem as string; RefreshFreeBodyWind(); };
+            side.Children.Add(pick);
+            side.Children.Add(Para("The shear wall design's forces in this wind case, W at strength level, no dead load (the gravity is above). " +
+                                   "Each connection is half of a pair: the member at its other end has the same force the other way.", true));
+            fbWindTable = new StackPanel();
+            side.Children.Add(fbWindTable);
+            RefreshFreeBodyWind();
+        }
+
+        private void RefreshFreeBodyWind()
+        {
+            if (fbWindTable == null || fb == null) return;
+            fbWindTable.Children.Clear();
+            string c = fbWindCase;
+            void Part(FreeBodyPart part, string letter, string title, Brush ink)
+            {
+                var rows = new List<string[]> { new[] { "", "Along (ft)", "Elev.", "Force (lb)" } };
+                foreach (var s in fb.Shears.Where(s => s.Part == part))
+                    rows.Add(new[] { s.What, "", $"{s.Z:0.##}", $"{s.Of(c):+#,0;-#,0;0} →" });
+                foreach (var k in fb.Connections.Where(k => k.Part == part))
+                    rows.Add(new[] { k.What, fb.Kind == "column" ? "" : $"at {k.AlongIn(c):0.##}", $"{k.Z:0.##}", $"{k.On(c):+#,0;-#,0;0} ↑" });
+                fbWindTable.Children.Add(new TextBlock { Text = $"{letter}  {title}", FontWeight = FontWeights.SemiBold, Foreground = ink, Margin = new Thickness(0, 6, 0, 2) });
+                if (rows.Count == 1) { fbWindTable.Children.Add(Para("None.", true)); return; }
+                fbWindTable.Children.Add(Mini(rows, new double[] { 110, 0, 0, 0 }));
+            }
+            Part(FreeBodyPart.External, "E", "The wind on it, and the members standing on it", new SolidColorBrush(DownColor));
+            Part(FreeBodyPart.Support, "S", "What holds it: its hold-downs, posts and sill", new SolidColorBrush(ReactionColor));
+            fbWindTable.Children.Add(new TextBlock { Text = "I  Internal forces at cuts", FontWeight = FontWeights.SemiBold, Foreground = Ui.Ink, Margin = new Thickness(0, 6, 0, 2) });
+            fbWindTable.Children.Add(Para("None: the whole member is drawn, not cut.", true));
+            string off = fb.WindOutOfBalance(c);
+            fbWindTable.Children.Add(Para($"ΣFx = {fb.WindShearImbalance(c):N0} lb, ΣFy = {fb.WindImbalance(c):N0} lb, ΣM = {fb.WindMomentImbalance(c):N0} lb·ft " +
+                                          $"(about its start at its base, of {fb.WindMomentScale(c):N0})" +
+                                          (off == null ? ": in equilibrium." : " — not in equilibrium: a force is not accounted for."), bold: true));
         }
 
         private void RefreshFreeBodyTable()

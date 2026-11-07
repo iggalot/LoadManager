@@ -15,6 +15,26 @@ namespace LoadManager.App
     public sealed partial class MainWindow
     {
         private static readonly Color DownColor = Wpf.EnvelopeDiagram.Down;
+
+        /// <summary>
+        /// The connections of the shear wall design as pairs of equal and opposite forces, and whether every member balances
+        /// the wind (<see cref="ConnectionBalance"/>): the check that every force is accounted for, level by level.
+        /// </summary>
+        private void ConnectionsSummary()
+        {
+            var c = ConnectionBalance.Run(B, lateral);
+            if (c.Pairs.Count == 0 && c.Bodies.Count == 0) return;
+            if (c.NoCases)
+            {
+                side.Children.Add(Para($"Connections: {c.Pairs.Count}, saved before the shear wall app kept their forces case by case: save the shear wall design again to check them.", true));
+                return;
+            }
+            side.Children.Add(Para($"Connections: {c.Pairs.Count} pairs of equal and opposite forces ({c.Pairs.Count(p => p.Internal)} between members, " +
+                                   $"{c.Pairs.Count(p => p.OnFoundation)} on the foundation). {c.Balanced.Count} of {c.Bodies.Count} walls, beams and columns balance the wind " +
+                                   "in every case (ΣFx, ΣFy, ΣM: click one for its free body).", true));
+            foreach (var p in c.Problems)
+                side.Children.Add(new TextBlock { Text = p.Message, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
+        }
         private static readonly Color UpColor = Wpf.EnvelopeDiagram.Up;
 
         // how big the loads are drawn: the largest line load (plf) and point load (lb), and the diagram's depth for the largest (ft)
@@ -75,6 +95,7 @@ namespace LoadManager.App
                     side.Children.Add(new TextBlock { Text = $"They are out of date: {string.Join(" and ", changed.Select(ModelFingerprint.Words))} changed since the shear walls were saved. Open the Shear Wall Calculator and save the design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
                 else if (changed == null && lateral.ModelRevision > 0 && doc.Revision > lateral.ModelRevision + 1)
                     side.Children.Add(Para($"The model has been saved since (revision {doc.Revision}): if the walls or the wind changed, save the shear wall design again.", true));
+                ConnectionsSummary();
             }
 
             // the envelope over all

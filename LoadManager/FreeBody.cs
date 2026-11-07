@@ -45,6 +45,42 @@ namespace LoadManager
         public double Resultant(LoadCombination c) => Value(c) * (IsLine ? B - A : 1);
     }
 
+    /// <summary>A member's half of one connection pair (<see cref="ConnectionPair"/>): the force on it, per wind case.</summary>
+    public sealed class FreeBodyConnection
+    {
+        public ConnectionPair Pair { get; set; }
+        /// <summary>Its own (it hangs from it, at its base: S); else one landing on it (E).</summary>
+        public bool Own { get; set; }
+        public FreeBodyPart Part { get; set; }
+        public string What { get; set; }
+        /// <summary>The elevation it acts at (ft) and where along the member (ft from its start): at the hold-down when it pulls.</summary>
+        public double Z { get; set; }
+        public double A { get; set; }
+        /// <summary>Where along the member it acts when it presses (ft): the end post's centreline.</summary>
+        public double ACompression { get; set; }
+
+        /// <summary>The force on this member in one wind case (lb, + up).</summary>
+        public double On(string windCase) => Own ? Pair.OnUpper(windCase) : Pair.OnLower(windCase);
+
+        /// <summary>Where along the member it acts in one wind case (ft from its start).</summary>
+        public double AlongIn(string windCase) => Pair.Of(windCase) < 0 ? ACompression : A;
+    }
+
+    /// <summary>
+    /// The wind's shear on a wall, per wind case: on its top from its diaphragm (E, the external load), and the sill's
+    /// reaction under it (S). Horizontal, along the wall.
+    /// </summary>
+    public sealed class FreeBodyShear
+    {
+        public FreeBodyPart Part { get; set; }
+        public string What { get; set; }
+        /// <summary>The elevation it acts at (ft).</summary>
+        public double Z { get; set; }
+        /// <summary>Wind case → the force (lb, W at strength level), + along the member from its start to its end.</summary>
+        public Dictionary<string, double> ByCase { get; set; } = new Dictionary<string, double>();
+        public double Of(string windCase) => windCase != null && ByCase.TryGetValue(windCase, out var v) ? v : 0;
+    }
+
     /// <summary>
     /// A free-body diagram of one whole wall, beam or column, from the gravity load path: its own weight (W), no internal
     /// forces (the element is drawn whole, not cut: I), what holds it up (S) and what is applied to it (E). The loads one
@@ -66,6 +102,54 @@ namespace LoadManager
         public double Top { get; set; }
         public List<FreeBodyForce> Forces { get; } = new List<FreeBodyForce>();
         public List<string> Notes { get; } = new List<string>();
+
+        /// <summary>
+        /// The wind on it and what holds it against the wind, per wind case, by WISE as for the gravity loads (kept apart from
+        /// <see cref="Forces"/>, the gravity combinations; W at strength level, no dead load here). E: the wind's shear on its
+        /// top from its diaphragm (<see cref="Shears"/>), and the connections of the members standing on it. S: its own
+        /// hold-downs and compression posts (<see cref="Connections"/>, each its half of an equal and opposite pair) and the
+        /// sill's shear. I: none (one whole member; a connection between two stories of the same wall is inside it).
+        /// </summary>
+        public List<FreeBodyConnection> Connections { get; } = new List<FreeBodyConnection>();
+
+        /// <summary>The wind's shear on it (E, at the top of each story it is a shear wall on) and the sill's under it (S).</summary>
+        public List<FreeBodyShear> Shears { get; } = new List<FreeBodyShear>();
+
+        /// <summary>The wind cases on it.</summary>
+        public List<string> WindCases => Connections.SelectMany(c => c.Pair.Force.Keys).Concat(Shears.SelectMany(s => s.ByCase.Keys)).Distinct().ToList();
+
+        /// <summary>ΣFy in one wind case (lb, + up): 0 when every vertical force on it is accounted for.</summary>
+        public double WindImbalance(string windCase) => Connections.Sum(c => c.On(windCase));
+
+        /// <summary>ΣFx along it in one wind case (lb).</summary>
+        public double WindShearImbalance(string windCase) => Shears.Sum(s => s.Of(windCase));
+
+        /// <summary>
+        /// ΣM about its start at its base in one wind case (lb·ft, in its own plane, + turning its end up): each vertical force
+        /// times its distance along, less each shear times its height. 0 when the connections take the wind's overturning.
+        /// </summary>
+        public double WindMomentImbalance(string windCase) =>
+            Connections.Sum(c => c.On(windCase) * c.AlongIn(windCase)) - Shears.Sum(s => s.Of(windCase) * (s.Z - Bottom));
+
+        /// <summary>
+        /// Why it does not balance the wind in one case (null: it does): ΣFy or ΣFx over 0.5 % of its largest force (at
+        /// least 1 lb), or ΣM over 1 % of <see cref="WindMomentScale"/> (at least 10 lb·ft): rounding aside.
+        /// </summary>
+        public string WindOutOfBalance(string windCase)
+        {
+            double f = Math.Max(Connections.Select(x => Math.Max(x.Pair.MaxTension, x.Pair.MaxCompression)).DefaultIfEmpty(0).Max(),
+                                Shears.SelectMany(s => s.ByCase.Values).Select(Math.Abs).DefaultIfEmpty(0).Max());
+            double fTol = Math.Max(1.0, 0.005 * f), mTol = Math.Max(10.0, 0.01 * WindMomentScale(windCase));
+            double fy = WindImbalance(windCase), fx = WindShearImbalance(windCase), m = WindMomentImbalance(windCase);
+            if (Math.Abs(fy) > fTol) return $"ΣFy = {fy:+#,0;-#,0} lb in {windCase}";
+            if (Math.Abs(fx) > fTol) return $"ΣFx = {fx:+#,0;-#,0} lb in {windCase}";
+            if (Math.Abs(m) > mTol) return $"ΣM = {m:+#,0;-#,0} lb·ft in {windCase} (of {WindMomentScale(windCase):N0})";
+            return null;
+        }
+
+        /// <summary>A scale for the moment check in one case (lb·ft): the wind's overturning on it and the moments of the forces landing on it.</summary>
+        public double WindMomentScale(string windCase) => Math.Abs(Shears.Where(s => s.Part == FreeBodyPart.External).Sum(s => s.Of(windCase) * (s.Z - Bottom)))
+                                                          + Connections.Where(c => !c.Own).Sum(c => Math.Abs(c.On(windCase) * c.AlongIn(windCase)));
 
         public IEnumerable<FreeBodyForce> Of(FreeBodyPart part) => Forces.Where(f => f.Part == part);
 
@@ -101,19 +185,108 @@ namespace LoadManager
             return list.OrderByDescending(c => Total(FreeBodyPart.Support, c)).ToList();
         }
 
-        /// <summary>The free body of the wall, beam or column with this ID, or null (not found, or nothing known of it).</summary>
-        public static FreeBody Of(Building b, LoadSection s, GravityLoadPath.Result path, string id)
+        /// <summary>
+        /// The free body of the wall, beam or column with this ID, or null (not found, or nothing known of it); with the
+        /// lateral design's connections on it from <paramref name="lateral"/> (null: none).
+        /// </summary>
+        public static FreeBody Of(Building b, LoadSection s, GravityLoadPath.Result path, string id, LateralSection lateral = null)
         {
             if (b == null || id == null) return null;
             s = s ?? new LoadSection();
             path = path ?? GravityLoadPath.Run(b, s);
+            FreeBody fb;
             switch (b.Find(id))
             {
-                case Wall w: return OfWall(b, s, path, w);
-                case Beam m: return OfBeam(b, path, m);
-                case Column c: return OfColumn(b, path, c);
+                case Wall w: fb = OfWall(b, s, path, w); break;
+                case Beam m: fb = OfBeam(b, path, m); break;
+                case Column c: fb = OfColumn(b, path, c); break;
                 default: return null;
             }
+            AddWind(b, fb, lateral, ConnectionPairs.Of(lateral));
+            return fb;
+        }
+
+        /// <summary>
+        /// The wind on it and what holds it against the wind (<see cref="Connections"/>, <see cref="Shears"/>): the wind's
+        /// shear on its top at each story it is a shear wall on (E) and the sill's (S); its half of each connection pair on it,
+        /// its own at its base (S), those landing on it (E).
+        /// </summary>
+        public static void AddWind(Building b, FreeBody fb, LateralSection lateral, IEnumerable<ConnectionPair> pairs)
+        {
+            double Along(Point2 x) => fb.Length <= 1e-9 ? 0
+                : Math.Max(0, Math.Min(fb.Length, ((x.X - fb.Start.X) * (fb.End.X - fb.Start.X) + (x.Y - fb.Start.Y) * (fb.End.Y - fb.Start.Y)) / fb.Length));
+            foreach (var p in ConnectionPairs.At(pairs, fb.Id))
+            {
+                bool own = p.Upper == fb.Id;
+                var comp = p.Source?.CompressionX is double cx && p.Source?.CompressionY is double cy ? new Point2(cx, cy) : p.Where;
+                string to = p.OnFoundation ? "the foundation" : p.Lower != null ? $"{p.LowerKind} {p.Lower}" : "nothing (nothing under it)";
+                fb.Connections.Add(new FreeBodyConnection
+                {
+                    Pair = p, Own = own, Part = own ? FreeBodyPart.Support : FreeBodyPart.External,
+                    What = own ? $"{p.From}: {p.Connector ?? "no connector"} to {to}" : $"{p.From} ({p.Connector ?? "no connector"}), from above",
+                    Z = Elev(b, p.LevelId), A = Along(p.Where), ACompression = Along(comp),
+                });
+            }
+            if (fb.Kind != "wall" || fb.Length <= 1e-9) return;
+            // + toward the wall's high end (east, north) in the design; + from its start to its end here
+            bool ew = Math.Abs(fb.End.X - fb.Start.X) >= Math.Abs(fb.End.Y - fb.Start.Y);
+            double sign = (ew ? fb.End.X - fb.Start.X : fb.End.Y - fb.Start.Y) >= 0 ? 1 : -1;
+            foreach (var d in (lateral?.Walls ?? new List<ShearWallDesign>()).Where(d => d.WallId == fb.Id && d.ShearOnTop != null && d.ShearOnTop.Count > 0))
+            {
+                var lv = b.Level(d.LevelId);
+                double top = lv?.Elevation ?? fb.Top;
+                // the shear acts at the top of its story, its design's height over the story's base
+                double z = d.HeightFt > 0 ? BaseOfStory(b, fb, lv) + d.HeightFt : top;
+                fb.Shears.Add(new FreeBodyShear
+                {
+                    Part = FreeBodyPart.External, What = $"The wind's shear from the {lv?.Name ?? "level"} diaphragm", Z = z,
+                    ByCase = d.ShearOnTop.ToDictionary(kv => kv.Key, kv => sign * kv.Value),
+                });
+                fb.Shears.Add(new FreeBodyShear
+                {
+                    Part = FreeBodyPart.Support, What = $"The sill's shear under {(lv == null ? "it" : "its story to " + lv.Name)}", Z = BaseOfStory(b, fb, lv),
+                    ByCase = d.ShearOnTop.ToDictionary(kv => kv.Key, kv => -sign * kv.Value),
+                });
+            }
+        }
+
+        /// <summary>
+        /// The free body of a wall, beam or column with the wind on it only (<see cref="AddWind"/>), no gravity loads: for the
+        /// check that every member balances the wind (<see cref="ConnectionBalance"/>). Null: not in the model.
+        /// </summary>
+        public static FreeBody WindOnly(Building b, string id, LateralSection lateral, IEnumerable<ConnectionPair> pairs)
+        {
+            FreeBody fb;
+            switch (b?.Find(id))
+            {
+                case Wall w:
+                    fb = new FreeBody { Id = w.Id, Kind = "wall", Start = w.Start, End = w.End, Length = Dist(w.Start, w.End), Bottom = Elev(b, w.BaseLevelId), Top = Elev(b, w.TopLevelId) };
+                    break;
+                case Beam m:
+                    fb = new FreeBody { Id = m.Id, Kind = "beam", Start = m.Start, End = m.End, Length = Dist(m.Start, m.End), Bottom = Elev(b, m.LevelId), Top = Elev(b, m.LevelId) };
+                    break;
+                case Column c:
+                    fb = new FreeBody { Id = c.Id, Kind = "column", Start = c.At, End = c.At, Bottom = Elev(b, c.BaseLevelId), Top = Elev(b, c.TopLevelId) };
+                    break;
+                default: return null;
+            }
+            AddWind(b, fb, lateral, pairs);
+            return fb;
+        }
+
+        private static double Dist(Point2 a, Point2 e) => Math.Sqrt((e.X - a.X) * (e.X - a.X) + (e.Y - a.Y) * (e.Y - a.Y));
+
+        /// <summary>The base of the story of <paramref name="fb"/> (a wall) that carries <paramref name="lv"/> (ft).</summary>
+        private static double BaseOfStory(Building b, FreeBody fb, Level lv)
+        {
+            if (lv == null || !(b.Find(fb.Id) is Wall w)) return fb.Bottom;
+            double z = fb.Bottom;
+            foreach (var l in b.LevelsAlong(w))
+            {
+                if (l.Id == lv.Id) return z;
+                z = l.Elevation;
+            }
+            return fb.Bottom;
         }
 
         private static double Elev(Building b, string levelId) => b.Level(levelId)?.Elevation ?? 0;

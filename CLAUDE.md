@@ -26,6 +26,13 @@
   `Analyze` (the load path, the uplift, `FoundationAnalysis`), `Run` (all of it, with given shear wall forces). The window
   uses `RoofWindOf` and `Analyze`; the hub uses `Run`. Uplift is a flag for the foundation design, not a fault. Stale shear
   wall forces: `ModelFingerprint.ChangedFromModel(lateral.BasedOn, b)`.
+- **Free bodies are WISE, for the gravity and the wind alike** (owner): `FreeBody` (W weight, I internal at cuts, S
+  supports, E applied). The wind is an external load and is never dropped. `FreeBody.Connections` and `Shears` are the
+  wind's side, per wind case: E the wind's shear on a wall's top (`ShearWallDesign.ShearOnTop`) and the connections of the
+  members standing on it, S its own hold-downs, compression posts and sill. Every connection is a pair of equal and
+  opposite forces (`ConnectionPairs` in `BuildingModel.Core`, from SWC's `Lateral.Holdowns`); which side is I, S or E
+  depends only on the body's boundary. `ConnectionBalance` checks every member in every case (ΣFx, ΣFy, ΣM:
+  `FreeBody.WindOutOfBalance`, one rule for the check and the window); `FoundationCheck.Run` includes it.
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.
