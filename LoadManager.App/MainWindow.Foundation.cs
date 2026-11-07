@@ -243,7 +243,7 @@ namespace LoadManager.App
                 var pen = new Pen(e.Lifts ? upInk : downInk, ReferenceEquals(p, selectedPoint) ? 3 : 1.4);
                 if (p.HasLateral) ctx.DrawRectangle(fill, pen, new Rect(c.X - r, c.Y - r, 2 * r, 2 * r));
                 else ctx.DrawEllipse(fill, pen, c, r, r);
-                sketch.Label(ctx, $"{p.From}: {e.Max:N0}" + (e.Lifts ? $" / {e.Min:N0}" : "") + " lb", new Point(c.X + r + 3, c.Y - r - 4), e.Lifts ? upInk : downInk, 9.5);
+                sketch.Label(ctx, $"{p.From}: {e.Max:N0}" + (e.Lifts ? $" / {e.Min:N0}" : "") + " lb", new Point(c.X + r + 3, c.Y + r - 2), e.Lifts ? upInk : downInk, 9.5);
             }
         }
 

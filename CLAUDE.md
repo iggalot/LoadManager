@@ -8,7 +8,8 @@
     - `LoadSection`: the `Loads` section of the project file: level loads, zones, wall tops, the walls' dead load.
     - `GravityLoadPath`.
     - `WindUplift` / `RoofWind`.
-    - `LateralSection`: the shear walls' forces on the foundation, written by the Shear Wall Calculator.
+    - `LateralSection` (now in `BuildingModel.Core`, `BuildingModel.Model`; 2026-11-06): the shear walls' forces on the foundation and each point's connector, written by the Shear Wall Calculator. Every plan draws them on the Ground plan (the shared sketch).
+    - The foundation tab shows the Ground plan (the lowest level), not Level 2.
     - `FoundationAnalysis` and `LoadCombinations`: ASD and strength, every wind case, the envelope.
   - `LoadManager.Wpf`: the controls.
   - `LoadManager.App`: `LoadManagerApp.exe`.

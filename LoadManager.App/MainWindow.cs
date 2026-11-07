@@ -437,9 +437,9 @@ namespace LoadManager.App
             }
             else
             {
-                // the foundation's plan: the first story's walls, those standing on the ground
-                var first = B.LevelsBottomUp.FirstOrDefault(l => l.Elevation > 0);
-                if (first != null) sketch.ShowLevel(first.Id);
+                // the foundation plan: the lowest level, showing the walls and columns standing on it and the hold-downs
+                var ground = B.LevelsBottomUp.FirstOrDefault();
+                if (ground != null) sketch.ShowLevel(ground.Id);
             }
             if (m == Mode.Foundation3D) view3D.Show(B);
             if (plan) Dispatcher.BeginInvoke(new Action(() => sketch.ZoomExtents()), DispatcherPriority.Loaded);
