@@ -11,6 +11,7 @@ using System.Windows.Threading;
 using ASCE7WindLoadCalculator;
 using ASCE7WindLoadCalculator.ModelAdapter;
 using BuildingModel.Diagnostics;
+using BuildingModel.Edits;
 using BuildingModel.Geometry;
 using BuildingModel.Model;
 using BuildingModel.Serialization;
@@ -46,10 +47,9 @@ namespace LoadManager.App
         private Mode mode = Mode.Loads;
         private string loadsLevelId;
 
-        // the loads' own undo: snapshots of the "Loads" section; the building is not edited here
-        private readonly List<string> history = new List<string>();
-        private int historyAt, savedAt;
-        private bool Dirty => historyAt != savedAt;
+        // the suite's undo (EditHistory), on this app's own part: snapshots of the "Loads" section; the building is not edited here
+        private readonly EditHistory history = new EditHistory();
+        private bool Dirty => history.IsDirty;
 
         // what the loads give (found again after every change)
         private GravityLoadPath.Result loadPath;
@@ -63,9 +63,7 @@ namespace LoadManager.App
         private Func<double, RoofWindCase> cladding;
         private string windWhy;
 
-        private FileSystemWatcher watcher;
-        private readonly DispatcherTimer reloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
-        private DateTime ignoreChangesUntil;
+        private ProjectWatcher watcher;
 
         private Building B => sketch.Building;
 
@@ -184,7 +182,6 @@ namespace LoadManager.App
                 else if (!ctrl && e.Key == Key.Delete && mode == Mode.Loads && selectedZones.Count > 0 && !(Keyboard.FocusedElement is TextBox)) { sketch.DeleteSelected(); e.Handled = true; } // the zones (the walls are the Building Model's)
                 else if (ctrl && e.Key == Key.A && mode != Mode.Foundation3D && !(Keyboard.FocusedElement is TextBox)) { sketch.HandleKey(Key.A, ModifierKeys.Control); e.Handled = true; }
             };
-            reloadTimer.Tick += (s, e) => { reloadTimer.Stop(); Reload(false); };
             Closing += (s, e) => { if (!ConfirmDiscard()) e.Cancel = true; };
             Closed += (s, e) => { watcher?.Dispose(); projectLock?.Dispose(); projectLock = null; };
 
@@ -208,15 +205,10 @@ namespace LoadManager.App
         public void Open(string file)
         {
             // one Load Manager per project (the same project again keeps this app's own lock)
-            LockHolder heldBy = null;
+            bool refused = false;
             var taken = projectLock != null && string.Equals(projectLock.ModelPath, file, StringComparison.OrdinalIgnoreCase)
-                ? projectLock : ProjectLock.TryTake(file, "loads", "Load Manager", out heldBy);
-            if (taken == null && heldBy != null)
-            {
-                MessageBox.Show(this, "This project is already open in another Load Manager: " + heldBy.Describe() + ".\n\nSwitch to that window, or close it first.",
-                                "Open", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
+                ? projectLock : ProjectDialogs.TakeLock(this, file, "loads", "Load Manager", out refused);
+            if (refused) return;
             try
             {
                 ProjectFolder.OpenFor(file);
@@ -255,13 +247,13 @@ namespace LoadManager.App
             {
                 var fresh = ModelFile.Load(path);
                 fresh.Building.SetData(LoadSection.Key, LoadsJson());
-                ignoreChangesUntil = DateTime.Now.AddSeconds(2);
                 ModelFile.Save(path, fresh);
+                watcher?.SavedByMe();
                 bool geometryChanged = ModelFile.BuildingToJson(WithoutLoads(fresh.Building)) != ModelFile.BuildingToJson(WithoutLoads(B));
                 doc = fresh;
                 if (geometryChanged) { string lvl = sketch.ActiveLevel?.Id; sketch.SetBuilding(fresh.Building, lvl); FindWind(); }
                 else doc.Building = B;
-                savedAt = historyAt;
+                history.MarkSaved();
                 Changed();
                 Log.Info("Project", $"Loads saved to {path} (revision {doc.Revision}).");
                 Say($"Loads saved (revision {doc.Revision}).");
@@ -286,9 +278,7 @@ namespace LoadManager.App
         private bool ConfirmDiscard()
         {
             if (!Dirty) return true;
-            var r = MessageBox.Show(this, "Save the load changes first?", "Load Manager", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-            if (r == MessageBoxResult.Cancel) return false;
-            return r == MessageBoxResult.No || Save();
+            return ProjectDialogs.SaveChangesFirst(this, "Save the load changes first?", "Load Manager", Save);
         }
 
         /// <summary>The file changed (the Building Model or the shear wall app saved it): read the building again, keeping unsaved loads.</summary>
@@ -297,12 +287,8 @@ namespace LoadManager.App
             watcher?.Dispose();
             watcher = null;
             if (string.IsNullOrEmpty(path)) return;
-            watcher = new FileSystemWatcher(Path.GetDirectoryName(path), Path.GetFileName(path)) { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size };
-            FileSystemEventHandler h = (s, e) => Dispatcher.BeginInvoke(new Action(() => { if (DateTime.Now >= ignoreChangesUntil) { reloadTimer.Stop(); reloadTimer.Start(); } }));
-            watcher.Changed += h;
-            watcher.Created += h;
-            watcher.Renamed += (s, e) => h(s, e);
-            watcher.EnableRaisingEvents = true;
+            watcher = new ProjectWatcher(path);
+            watcher.ChangedOnDisk += (s, e) => Reload(false);
         }
 
         private void Reload(bool asked)
@@ -310,7 +296,7 @@ namespace LoadManager.App
             if (string.IsNullOrEmpty(path)) return;
             ModelDocument d;
             try { d = ModelFile.Load(path); }
-            catch (IOException) { reloadTimer.Start(); return; } // still being written: try again shortly
+            catch (IOException) { if (File.Exists(path)) watcher?.CheckAgain(); return; } // still being written: try again shortly
             catch (Exception ex) when (ex is InvalidDataException || ex is System.Runtime.Serialization.SerializationException || ex is ArgumentException)
             {
                 Log.Warning("Project", "The changed file could not be read", ex);
@@ -337,47 +323,38 @@ namespace LoadManager.App
             return string.IsNullOrEmpty(j) ? null : j;
         }
 
-        private void ResetHistory()
-        {
-            history.Clear();
-            history.Add(LoadsJson());
-            historyAt = savedAt = 0;
-        }
+        private void ResetHistory() => history.Reset(LoadsJson());
 
-        /// <summary>One edit of the loads (an undo step), made by <paramref name="change"/> on the building's data. False: nothing changed.</summary>
+        /// <summary>One edit of the loads (an undo step, named <paramref name="what"/>), made by <paramref name="change"/> on the building's data. False: nothing changed.</summary>
         private bool Edit(string what, Action<Building> change)
         {
             if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return false; }
             change(B);
-            string j = LoadsJson();
-            if (j == history[historyAt]) return false;
-            history.RemoveRange(historyAt + 1, history.Count - historyAt - 1);
-            if (savedAt > historyAt) savedAt = -1;
-            history.Add(j);
-            historyAt++;
+            if (!history.Record(LoadsJson(), what)) return false;
             Log.Info("Loads", what);
             Changed();
             Say(what + " (Ctrl+Z undoes it.)");
             return true;
         }
 
+        private void PutLoads(string json) => B.SetData(LoadSection.Key, string.IsNullOrEmpty(json) ? null : json);
+
         private void Undo()
         {
-            if (historyAt == 0) { Say("Nothing to undo."); return; }
-            historyAt--;
-            B.SetData(LoadSection.Key, history[historyAt]);
-            selectedZone = -1;
+            if (!history.CanUndo) { Say("Nothing to undo."); return; }
+            string what = history.UndoLabel;
+            PutLoads(history.Undo());
             Changed();
-            Say("Undone.");
+            Say(what == null ? "Undone." : "Undone: " + what);
         }
 
         private void Redo()
         {
-            if (historyAt + 1 >= history.Count) { Say("Nothing to redo."); return; }
-            historyAt++;
-            B.SetData(LoadSection.Key, history[historyAt]);
+            if (!history.CanRedo) { Say("Nothing to redo."); return; }
+            string what = history.RedoLabel;
+            PutLoads(history.Redo());
             Changed();
-            Say("Redone.");
+            Say(what == null ? "Redone." : "Redone: " + what);
         }
 
         // ------------------------------------------------------------------ what the loads give
