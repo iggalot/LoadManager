@@ -22,6 +22,10 @@
     zones (`zone:<i>`) and foundation points (`point:<from>`) as its own objects. Several walls: one top load for all;
     several zones: delete them all. Never add a picking of its own.
   - **One Load Manager per project:** it holds the `loads` project lock (`ProjectLock` in `BuildingModel.Core`).
+- **The foundation with no window:** `FoundationCheck` (LoadManager core): `RoofWindOf` (the wind from `WindCheck`),
+  `Analyze` (the load path, the uplift, `FoundationAnalysis`), `Run` (all of it, with given shear wall forces). The window
+  uses `RoofWindOf` and `Analyze`; the hub uses `Run`. Uplift is a flag for the foundation design, not a fault. Stale shear
+  wall forces: `ModelFingerprint.ChangedFromModel(lateral.BasedOn, b)`.
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.

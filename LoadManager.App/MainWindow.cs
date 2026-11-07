@@ -359,43 +359,21 @@ namespace LoadManager.App
 
         // ------------------------------------------------------------------ what the loads give
 
-        /// <summary>The wind calculator's roof pressures for the building as it is, from the project's wind setup.</summary>
+        /// <summary>The wind calculator's roof pressures for the building as it is, from the project's wind setup (the shared <see cref="FoundationCheck"/>).</summary>
         private void FindWind()
         {
-            windCases = null; cladding = null; windWhy = null;
-            var ws = WindSection.Read(B);
-            if (ws == null) { windWhy = "This project has no wind setup (the wind calculator's inputs in the file), so there is no roof wind: set it up in the wind or shear wall app."; return; }
-            try
-            {
-                var input = ws.BuildingFor(B);
-                var r = WindAnalysis.Run(ws.Edition, ws.ToParameters(), input.Building);
-                var box = B.Envelope().Bounds;
-                // the wind calculator's own wind cases, each as it made it (its setup's procedure and Fig. 27.3-8 exception)
-                windCases = RoofWind.Cases(box, WindCases.For(r, ws.OnlyCases1And3), r.MwfrsAlongLength?.Edition?.Name);
-                var cc = r.Cladding;
-                cladding = a => RoofWind.Cladding(box, cc, a);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException || ex is NullReferenceException || ex is IndexOutOfRangeException)
-            {
-                windWhy = "The wind calculator could not find the roof pressures for this building: " + ex.Message;
-                Log.Warning("Wind", windWhy, ex);
-            }
+            windWhy = FoundationCheck.RoofWindOf(B, WindCheck.Run(B), out windCases, out cladding);
+            if (windWhy != null && WindSection.Read(B) != null) Log.Warning("Wind", windWhy, null);
         }
 
         /// <summary>After every change of the loads or the building: the load path, the uplift, the foundation, and what is shown.</summary>
         private void Changed()
         {
             var s = LoadSection.Read(B);
-            loadPath = GravityLoadPath.Run(B, s);
-            try { uplift = windCases == null && cladding == null ? null : WindUplift.Run(B, s, windCases, cladding); }
-            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException)
-            {
-                uplift = null;
-                windWhy = "The wind uplift could not be found: " + ex.Message;
-                Log.Warning("Wind", windWhy, ex);
-            }
             lateral = LateralSection.Read(B);
-            foundation = FoundationAnalysis.Run(B, s, uplift, lateral, method);
+            string why = windWhy;
+            foundation = FoundationCheck.Analyze(B, s, windCases, cladding, lateral, method, out loadPath, out uplift, ref why); // the hub's check runs the same
+            if (why != windWhy) { windWhy = why; Log.Warning("Wind", windWhy, null); }
             FoundationScales();
             // the same combination by name after a change (the list changes with the method and the loads); else the envelope
             combo3D = combo3D == null ? null : foundation.Cases.FirstOrDefault(c => c.Name == combo3D.Name);
