@@ -47,7 +47,7 @@
   (step 6): its own wind (`Lateral.Diaphragms`), the walls' shears under it and from above as pairs (`ShearPairs`, in
   `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`).
 - **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
-  or beam, else the MWFRS (`Governs`).
+  or beam, else the MWFRS (`Governs`); place by place along it too (`Along`, `RoofTieStep`: cut where any of them changes).
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.

@@ -61,6 +61,19 @@ namespace LoadManager.Wpf
                         t.Cladding == null ? "none" : Net(t.Cladding.Net), t.Mwfrs == null ? "none" : $"{Net(t.Mwfrs.Net)} ({t.MwfrsCase?.Name})",
                         t.Governs, $"{t.Line.Dead:N0}", $"{t.Line.Wind:N0}", Net(t.Line.Net), Net(t.PerRafter),
                     }), "Roof ties"));
+                // place by place along each tie whose load changes along it (collapsed: the table above is each one's worst)
+                var varies = ties.Where(t => t.Along.Count > 1).ToList();
+                if (varies.Count > 0)
+                    root.Children.Add(new Expander
+                    {
+                        Header = $"Along each tie ({varies.Count} change along their length): the worse of the C&C and the MWFRS place by place",
+                        IsExpanded = false, Margin = new Thickness(0, 4, 0, 8),
+                        Content = FoundationLoadsWindow.Table(new[] { "At the roof", "From (ft)", "To (ft)", "0.6D + 0.6W (plf)", "Governs", "Case", "Per rafter (lb)" },
+                            varies.SelectMany(t => t.Along.Select(x => new[]
+                            {
+                                (t.IsBeam ? "beam " : "") + t.Id, $"{x.A:0.##}", $"{x.B:0.##}", Net(x.Line.Net), x.Governs, x.Case?.Name ?? "", Net(x.PerRafter(t.SpacingIn)),
+                            })), "Roof ties along"),
+                    });
             }
             else Text("No wind at the roof: the ties are not found.", true);
 

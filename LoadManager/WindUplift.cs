@@ -45,6 +45,27 @@ namespace LoadManager
         public RoofWindCase Case { get; set; }
         /// <summary>The net per rafter (lb, 0.6D + 0.6W; negative: up).</summary>
         public double PerRafter => Line.Net * SpacingIn / 12.0;
+
+        /// <summary>
+        /// The tie place by place along its wall or beam (ft from its start): where the C&amp;C zones or the MWFRS case lifting it
+        /// most change, the worse of the two there (owner: the C&amp;C where it is higher). <see cref="Line"/> is the worst of them.
+        /// </summary>
+        public List<RoofTieStep> Along { get; } = new List<RoofTieStep>();
+    }
+
+    /// <summary>One stretch of a roof tie (<see cref="RoofTie.Along"/>): its net line load (0.6D + 0.6W, the roof's share), which governs and its case.</summary>
+    public sealed class RoofTieStep
+    {
+        public double A { get; set; }
+        public double B { get; set; }
+        public LineLoad Line { get; set; } = new LineLoad();
+        public bool CladdingGoverns { get; set; }
+        public string Governs => CladdingGoverns ? "C&C" : "MWFRS";
+        public RoofWindCase Case { get; set; }
+        public double Length => B - A;
+        /// <summary>The net per rafter here (lb; negative: up).</summary>
+        public double PerRafter(double spacingIn) => Line.Net * spacingIn / 12.0;
+        public override string ToString() => $"{A:0.##} to {B:0.##} ft: {Line.Net:0} plf ({Governs})";
     }
 
     /// <summary>
@@ -91,6 +112,7 @@ namespace LoadManager
             var at = plain.Values.Where(x => x.LevelId == u.RoofLevelId && x.TributaryMax > 0).Select(x => (id: x.WallId, beam: false, span: x.FramingSpan))
                           .Concat(plain.Beams.Values.Where(x => x.LevelId == u.RoofLevelId && x.TributaryMax > 0).Select(x => (id: x.BeamId, beam: true, span: x.FramingSpan)))
                           .Select(x => (x.id, x.beam, x.span, area: Math.Round(RafterArea(x.span, spacing)))).Where(x => x.area > 0).ToList();
+            var claddingAlong = new Dictionary<string, LoadProfile>();
             foreach (var group in at.GroupBy(x => x.area).Where(g => cladding != null))
             {
                 var c = cladding(group.Key);
@@ -102,6 +124,8 @@ namespace LoadManager
                     var line = x.beam ? (r.Beams.TryGetValue(x.id, out var m) ? m.FromLevel : null)
                                       : (r.TryGetValue(GravityLoadPath.Key(x.id, u.RoofLevelId), out var w) ? w.FromLevel : null);
                     if (line != null) u.Ties[x.id] = new RoofTie { Id = x.id, IsBeam = x.beam, SpacingIn = spacing, SpanFt = x.span, Area = x.area, Cladding = line, CladdingCase = c };
+                    var prof = Profile(r, x.id, x.beam, u.RoofLevelId);
+                    if (line != null && prof != null) claddingAlong[x.id] = prof;
                 }
             }
             // the MWFRS at each tie, the case lifting it most there; the tie takes the worse of the two (owner)
@@ -120,7 +144,50 @@ namespace LoadManager
                 t.Line = t.CladdingGoverns ? t.Cladding : t.Mwfrs;
                 t.Case = t.CladdingGoverns ? t.CladdingCase : t.MwfrsCase;
             }
+            // place by place along each: the C&C there against every MWFRS case there
+            foreach (var t in u.Ties.Values)
+                FillAlong(t, claddingAlong.TryGetValue(t.Id, out var cp) ? (cp, t.CladdingCase) : ((LoadProfile, RoofWindCase)?)null,
+                          u.Runs.Select(p => (Profile(p.Path, t.Id, t.IsBeam, u.RoofLevelId), p.Case)).Where(p => p.Item1 != null).ToList());
             return u;
+        }
+
+        /// <summary>The roof's share along a wall's top or a beam in one pass (null: none, or no profile kept).</summary>
+        private static LoadProfile Profile(GravityLoadPath.Result path, string id, bool beam, string roofLevelId)
+        {
+            var p = beam ? (path.Beams.TryGetValue(id, out var m) ? m.FromLevelProfile : null)
+                         : (path.TryGetValue(GravityLoadPath.Key(id, roofLevelId), out var w) ? w.FromLevelProfile : null);
+            return p == null || p.IsEmpty ? null : p;
+        }
+
+        /// <summary>
+        /// The tie's stretches (<see cref="RoofTie.Along"/>): cut wherever any of the loads changes; in each, the MWFRS case
+        /// lifting it most there, and the C&amp;C where it is at least as high (the owner's rule, as for the whole tie).
+        /// </summary>
+        private static void FillAlong(RoofTie t, (LoadProfile profile, RoofWindCase c)? cladding, List<(LoadProfile profile, RoofWindCase c)> mwfrs)
+        {
+            const double tol = 1e-6;
+            var all = mwfrs.Select(m => m.profile).Concat(cladding.HasValue ? new[] { cladding.Value.profile } : new LoadProfile[0]).ToList();
+            var cuts = all.SelectMany(p => p.Steps.SelectMany(s => new[] { s.A, s.B })).OrderBy(x => x)
+                          .Aggregate(new List<double>(), (l, x) => { if (l.Count == 0 || x - l[l.Count - 1] > tol) l.Add(x); return l; });
+            LineLoad Here(LoadProfile p, double x) => p.Steps.FirstOrDefault(s => x >= s.A - tol && x <= s.B + tol)?.Load;
+            for (int i = 0; i + 1 < cuts.Count; i++)
+            {
+                double a = cuts[i], b = cuts[i + 1], mid = (a + b) / 2;
+                LineLoad mw = null; RoofWindCase mc = null;
+                foreach (var m in mwfrs)
+                {
+                    var l = Here(m.profile, mid);
+                    if (l != null && (mw == null || l.Net < mw.Net - 1e-9)) { mw = l; mc = m.c; }
+                }
+                var cc = cladding.HasValue ? Here(cladding.Value.profile, mid) : null;
+                if (mw == null && cc == null) continue;
+                bool cg = cc != null && (mw == null || cc.Net <= mw.Net + 1e-9);
+                var line = cg ? cc : mw;
+                var c = cg ? cladding.Value.c : mc;
+                var last = t.Along.LastOrDefault();
+                if (last != null && Math.Abs(last.B - a) < tol && last.CladdingGoverns == cg && last.Case == c && Math.Abs(last.Line.Net - line.Net) < 1e-6) { last.B = b; continue; }
+                t.Along.Add(new RoofTieStep { A = a, B = b, Line = line, CladdingGoverns = cg, Case = c });
+            }
         }
 
         private Governing<T> Worst<T>(Func<GravityLoadPath.Result, T> pick) where T : GravityLoad
