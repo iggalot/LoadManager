@@ -33,7 +33,8 @@ namespace LoadManager
     /// gravity reaction there (the load path's, each load on its own), the roof's wind in the case (its uplift pass) and the
     /// hold-downs' pair at the combination's W factor (the shear wall app's, <see cref="StoryHoldown.Up"/>). Where it pulls
     /// up, the end must be tied down for that (the shear wall app sizes its connection for the hold-down's tension alone,
-    /// no dead load); where the dead load holds it, it only bears. Only reads.
+    /// no dead load: conservative, the owner's choice for now, to revisit if it becomes an issue); where the dead load holds
+    /// it, it only bears. Only reads.
     /// </summary>
     public static class UpperUplift
     {

@@ -52,7 +52,7 @@ namespace LoadManager.App
             if (up.Count == 0) return;
             side.Children.Add(Para("Beam ends and upper column bases carrying hold-downs: the net force on each support at worst, every combination with W in " +
                                    "every wind case (its gravity reaction, the roof's wind, the hold-downs' pair). The shear wall app sizes their connection " +
-                                   "for the hold-downs alone.", true));
+                                   "for the hold-downs alone: conservative (the owner's choice for now; revisit if it becomes an issue).", true));
             var rows = new List<string[]> { new[] { "", "On", "At worst (lb)", "Hold-downs alone", "Connection" } };
             rows.AddRange(up.Select(p => new[]
             {
