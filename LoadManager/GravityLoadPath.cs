@@ -88,8 +88,13 @@ namespace LoadManager
         public string BeamId { get; set; }
         public string LevelId { get; set; }
         public double Span { get; set; }
-        /// <summary>Its share of the level's floor or roof (plf, the most along it, taken over the whole span).</summary>
+        /// <summary>Its share of the level's floor or roof (plf, the most along it: for the tables).</summary>
         public LineLoad FromLevel { get; set; } = new LineLoad();
+        /// <summary>
+        /// How that share varies along it (from its start): each step a load of its own in the reactions (owner: every load
+        /// on a beam taken on its own, never the largest over the span). Empty: none found (then <see cref="FromLevel"/> over the span).
+        /// </summary>
+        public LoadProfile FromLevelProfile { get; set; } = new LoadProfile();
         public double TributaryMin { get; set; }
         public double TributaryMax { get; set; }
         /// <summary>The longest span of the framing landing on it (ft).</summary>
@@ -325,9 +330,10 @@ namespace LoadManager
                     if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
                     else
                     {
-                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out _);
+                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out var beamProfile);
                         r.TributaryMax = hi; r.TributaryMin = lo; r.FramingSpan = span;
                         r.FromLevel = load;
+                        r.FromLevelProfile = beamProfile;
                         r.Zones.AddRange(met);
                         if (edge > Bearing) r.Notes.Add($"No wall or beam found past it on one side: the framing to the edge ({edge:0.##} ft) is all on this beam.");
                     }
@@ -338,7 +344,14 @@ namespace LoadManager
                         if (o1 - o0 <= Tol) continue;
                         var aUp = b.LevelsAlong(a).FirstOrDefault();
                         if (aUp == null || !result.TryGetValue(Key(a.Id, aUp.Id), out var ar)) continue;
-                        r.Partials.Add(new PartialLoad { From = a.Id, A = o0, B = o1, Load = ar.Load + new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) } });
+                        // its profile along the beam where they overlap, with its own weight there (as onto a wall under
+                        // it): one part-length load a step, so the beam takes what the wall's base gives, place by place
+                        double la = Dist(a.Start, a.End);
+                        var wa = a;
+                        var part = ar.Profile.Moved(x => Along(me, la < 1e-9 ? wa.Start : new Point2(wa.Start.X + (wa.End.X - wa.Start.X) * x / la, wa.Start.Y + (wa.End.Y - wa.Start.Y) * x / la)), o0, o1)
+                                     .Plus(LoadProfile.Uniform(o0, o1, new LineLoad { Dead = s.WallDead * (aUp.Elevation - lv.Elevation) }));
+                        foreach (var st in part.Steps)
+                            r.Partials.Add(new PartialLoad { From = a.Id, A = st.A, B = st.B, Load = st.Load });
                     }
                     foreach (var g in landings.Where(g => g.Target == m.Id))
                         r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From, Source = g.Source });
@@ -455,13 +468,31 @@ namespace LoadManager
         /// <summary>"BM1 via W7": a load brought down through a wall (the first wall it came through is kept).</summary>
         private static string Via(string from, string wall) => from.Contains(" via ") ? from : $"{from} via {wall}";
 
-        /// <summary>A simple span's end reactions from its uniform, part-length and concentrated loads (statics, each kind alike).</summary>
+        /// <summary>
+        /// A simple span's end reactions: each load on it on its own, by statics (its floor or roof share step by step along
+        /// it, each wall standing on it step by step, each point load), each kind alike, and summed (owner: never the largest
+        /// over the span).
+        /// </summary>
         private static void Reactions(BeamLoad r)
         {
             double L = r.Span;
             if (L <= Tol) return;
-            var total = r.FromLevel.Over(L);
-            var end = r.FromLevel.Over(L).Times(0.5);
+            var total = new PointLoad();
+            var end = new PointLoad();
+            if (r.FromLevelProfile == null || r.FromLevelProfile.IsEmpty)
+            {
+                total = r.FromLevel.Over(L);
+                end = r.FromLevel.Over(L).Times(0.5);
+            }
+            else
+                foreach (var st in r.FromLevelProfile.Steps)
+                {
+                    double a = Math.Max(0, Math.Min(L, st.A)), e = Math.Max(0, Math.Min(L, st.B));
+                    if (e - a <= Tol) continue;
+                    var q = st.Load.Over(e - a);
+                    total += q;
+                    end += q.Times((a + e) / 2 / L);
+                }
             foreach (var p in r.Partials)
             {
                 var q = p.Load.Over(p.B - p.A);

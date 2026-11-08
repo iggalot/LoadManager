@@ -112,6 +112,73 @@ namespace LoadManager.Tests
         }
 
         /// <summary>
+        /// A beam with several loads on it, none of them uniform (owner: every load on a beam on its own, never the largest):
+        /// the floor's share with a heavier zone over part of it, and the wall standing on it with a heavier roof zone over part
+        /// of the wall. Its reactions are the statics of each load on its own: ΣFz = 0 and ΣM = 0 about its start in every
+        /// combination; the wall's base onto it and its load from the wall are equal and opposite, place by place; the wall
+        /// alone, the beam alone and the two together balance.
+        /// </summary>
+        [TestMethod]
+        public void ABeamsLoads_EachOnItsOwn_NeverTheLargest()
+        {
+            var b = Building.New("Two");
+            b.Roof.Shape = RoofShape.Flat;
+            b.Roof.Overhang = 0;
+            var l2 = b.AddLevel("Level 2", 10);
+            var rf = b.AddLevel("Roof", 20);
+            b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
+            b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            b.AddWall(b.Ground, l2, 0, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
+            b.AddWall(l2, rf, 0, 0, 30, 0);
+            b.AddWall(l2, rf, 0, 20, 30, 20);
+            var wall = b.AddWall(l2, rf, 10, 10, 20, 10);
+            var bm = b.AddBeam(l2, 0, 10, 30, 10);
+            b.AddColumn(b.Ground, l2, 0, 10);
+            b.AddColumn(b.Ground, l2, 30, 10);
+            LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10, RoofLive = 20 });
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10, Live = 40 });
+            LoadSection.SetWallDead(b, 10);
+            LoadSection.SetZones(b, new[]
+            {
+                new LoadZone { LevelId = rf.Id, Name = "Mech", X0 = 10, Y0 = 0, X1 = 14, Y1 = 20, Load = new AreaLoad { Dead = 40 } },
+                new LoadZone { LevelId = l2.Id, Name = "Files", X0 = 20, Y0 = 0, X1 = 26, Y1 = 20, Load = new AreaLoad { Dead = 30, Live = 100 } },
+            });
+            var s = LoadSection.Read(b);
+            var path = GravityLoadPath.Run(b, s);
+            var r = path.Beams[bm.Id];
+            Assert.IsTrue(r.FromLevelProfile.Steps.Select(x => x.Load.Dead).Distinct().Count() > 1, "the floor's share varies along the beam");
+            Assert.IsTrue(r.Partials.Where(p => p.From == wall.Id).Select(p => p.Load.Dead).Distinct().Count() > 1, "the wall's load varies along it");
+
+            var fb = FreeBody.Of(b, s, path, bm.Id);
+            var wf = FreeBody.Of(b, s, path, wall.Id);
+            var both = FreeBody.OfBody(b, s, path, new[] { bm.Id, wall.Id });
+            foreach (var c in LoadCombinations.Asd().Where(x => x.Types.All(t => t == LoadType.Dead || t == LoadType.Live || t == LoadType.RoofLive)))
+            {
+                Assert.AreEqual(0, fb.Imbalance(c), Tol, $"{c.Name}: the beam, ΣFz");
+                // ΣM about its start: each load at its own place, the end's reaction at L
+                double m = fb.Forces.Where(f => !f.Up).Sum(f => f.Resultant(c) * (f.A + f.B) / 2);
+                double rEnd = fb.Forces.Single(f => f.Up && f.A > 1).Resultant(c);
+                Assert.AreEqual(m, rEnd * r.Span, 1.0, $"{c.Name}: the beam, ΣM about its start");
+                Assert.AreEqual(0, wf.Imbalance(c), Tol, $"{c.Name}: the wall");
+                Assert.AreEqual(0, both.Imbalance(c), Tol, $"{c.Name}: the two together");
+                // the pair between them: the wall's base on the beam and the beam's load from it, equal and opposite
+                double onBeam = fb.Forces.Where(f => f.Other == wall.Id).Sum(f => f.Resultant(c));
+                double underWall = wf.Forces.Where(f => f.Other == bm.Id && f.Up).Sum(f => f.Resultant(c));
+                Assert.AreEqual(onBeam, underWall, Tol, $"{c.Name}: the pair");
+                double moOn = fb.Forces.Where(f => f.Other == wall.Id).Sum(f => f.Resultant(c) * (f.A + f.B) / 2);
+                if (c.Name == "D")
+                {
+                    // by hand: the roof zone replaces the roof's dead over x 10 to 14, a 10 ft strip, and the wall's own 10 psf x 10 ft:
+                    // 4 ft at 400 + 100 = 500 plf, 6 ft at 100 + 100 = 200 plf: 2000 + 1200 = 3200 lb, its centroid
+                    // (2000 x 12 + 1200 x 17) / 3200 = 13.875 ft (the largest over the wall, 500 plf x 10 ft at 15 ft, was 5000 lb)
+                    Assert.AreEqual(3200, onBeam, Tol, "D: the wall on the beam");
+                    Assert.AreEqual(13.875, moOn / onBeam, 1e-6, "D: where it sits");
+                }
+            }
+        }
+
+        /// <summary>
         /// The two-story box of <see cref="BeamAndColumn_Balance"/>: the wall on Level 2 over the ground's wall. Alone, the
         /// lower wall is cut from the upper (I, down onto it); alone, the upper is cut from the lower (I, up under it); both
         /// together, the pair is inside: E, W and the foundation's S only, in equilibrium. All selected: the whole structure.

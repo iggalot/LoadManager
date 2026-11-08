@@ -518,7 +518,7 @@ namespace LoadManager
             foreach (var st in p?.Steps ?? new List<ProfileStep>())
             {
                 var load = ServiceLoad.Of(st.Load);
-                if (load.IsEmpty || st.Length <= 1e-9) continue;
+                if ((load.IsEmpty && Math.Abs(load.PathWind) < 1e-9) || st.Length <= 1e-9) continue;
                 var last = fb.Forces.LastOrDefault();
                 if (last != null && last.Part == part && last.What == what && last.Other == other && Math.Abs(last.Z - z) < 1e-9 && last.Up == up && Math.Abs(last.B - st.A) < 1e-6 && SameLoad(last.Load, load))
                 { last.B = st.B; continue; }
@@ -527,7 +527,7 @@ namespace LoadManager
         }
 
         private static bool SameLoad(ServiceLoad a, ServiceLoad b) =>
-            Math.Abs(a.Dead - b.Dead) < 1e-6 && Math.Abs(a.Live - b.Live) < 1e-6 && Math.Abs(a.RoofLive - b.RoofLive) < 1e-6 && Math.Abs(a.Snow - b.Snow) < 1e-6;
+            Math.Abs(a.Dead - b.Dead) < 1e-6 && Math.Abs(a.Live - b.Live) < 1e-6 && Math.Abs(a.RoofLive - b.RoofLive) < 1e-6 && Math.Abs(a.Snow - b.Snow) < 1e-6 && Math.Abs(a.PathWind - b.PathWind) < 1e-6;
 
         private static FreeBody OfWall(Building b, LoadSection s, GravityLoadPath.Result path, Wall w)
         {
@@ -650,8 +650,11 @@ namespace LoadManager
             var fb = New(m.Id, "beam", m.Start, m.End, z, z);
             if (!path.Beams.TryGetValue(m.Id, out var r)) { fb.Notes.Add("The load path does not reach this beam."); return fb; }
             var lv = b.Level(m.LevelId);
-            if (!r.FromLevel.IsEmpty)
-                fb.Forces.Add(new FreeBodyForce { Part = FreeBodyPart.External, What = $"{lv?.Name} {(lv?.Id == b.RoofLevel()?.Id ? "roof" : "floor")}", Member = fb.Id, Z = z, A = 0, B = r.Span, Load = ServiceLoad.Of(r.FromLevel) });
+            string level = $"{lv?.Name} {(lv?.Id == b.RoofLevel()?.Id ? "roof" : "floor")}";
+            // its floor or roof share step by step along it, as its reactions take it (each load on its own)
+            if (r.FromLevelProfile != null && !r.FromLevelProfile.IsEmpty) AddProfile(fb, r.FromLevelProfile, FreeBodyPart.External, level, z, false);
+            else if (!r.FromLevel.IsEmpty)
+                fb.Forces.Add(new FreeBodyForce { Part = FreeBodyPart.External, What = level, Member = fb.Id, Z = z, A = 0, B = r.Span, Load = ServiceLoad.Of(r.FromLevel) });
             foreach (var p in r.Partials)
                 fb.Forces.Add(new FreeBodyForce { Part = FreeBodyPart.Internal, What = $"{p.From} standing on it, with its weight", Member = fb.Id, Other = p.From, Z = z, A = p.A, B = p.B, Load = ServiceLoad.Of(p.Load) });
             foreach (var p in r.Points)
