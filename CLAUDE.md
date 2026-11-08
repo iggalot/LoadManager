@@ -40,7 +40,8 @@
   window: Ctrl or Shift + click members in the 3D foundation for one body; View > Internal forces is the plans' and the
   free bodies' one setting. In a wind case (`OfBody(..., uplift, windCase)`) a free body has the gravity, the roof's wind
   in that case (its uplift pass) and the shear walls' connections in it, so its combinations with W balance too
-  (`Imbalance`, `ConnectionsUp`); in the window, the case picked under Wind is the combinations' W.
+  (`Imbalance`, `ConnectionsUp`); in the window, the case picked under Wind is the combinations' W. Gravity free bodies check
+  ΣFz and ΣM too (`FreeBody.OutOfBalance`), every member and the whole structure by `GravityBalance` (in `FoundationCheck.Run`).
 - **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
   or beam, else the MWFRS (`Governs`).
 - **Build:** `MSBuild LoadManager.sln -restore`.

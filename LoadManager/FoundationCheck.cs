@@ -36,6 +36,8 @@ namespace LoadManager
         public List<FoundationProblem> Problems { get; } = new List<FoundationProblem>();
         /// <summary>The lateral design's connections as pairs, and whether each member they touch balances (<see cref="ConnectionBalance"/>).</summary>
         public ConnectionBalanceResult Connections { get; set; }
+        /// <summary>Every member and the whole structure in equilibrium under the gravity loads (ΣFz, ΣM): <see cref="GravityBalance"/>.</summary>
+        public GravityBalanceResult Gravity { get; set; }
     }
 
     /// <summary>
@@ -103,6 +105,7 @@ namespace LoadManager
             r.Uplift = uplift;
             r.Problems.AddRange(Problems(r.Analysis));
             r.Connections = ConnectionBalance.Run(b, r.Lateral);
+            r.Gravity = GravityBalance.Run(b, s, path, method);
             return r;
         }
 

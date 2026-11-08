@@ -35,6 +35,19 @@ namespace LoadManager.App
             foreach (var p in c.Problems)
                 side.Children.Add(new TextBlock { Text = p.Message, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
         }
+        /// <summary>Every member and the whole structure under the gravity loads: ΣFz and ΣM in every combination (GravityBalance).</summary>
+        private void GravitySummary()
+        {
+            if (loadPath == null) return;
+            var g = GravityBalance.Run(B, LoadSection.Read(B), loadPath, method);
+            if (g.Bodies.Count == 0) return;
+            side.Children.Add(Para($"Gravity: {g.Balanced.Count} of {g.Bodies.Count} walls, beams and columns in equilibrium in every combination ({MethodName}; ΣFz, ΣM, " +
+                                   "each load at its own place: a wall on a beam or a wall a distributed load, step by step)" +
+                                   (g.WholeOutOfBalance == null ? ", and the whole structure." : "."), true));
+            foreach (var p in g.Problems)
+                side.Children.Add(new TextBlock { Text = p.Message, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
+        }
+
         private static readonly Color UpColor = Wpf.EnvelopeDiagram.Up;
 
         // how big the loads are drawn: the largest line load (plf) and point load (lb), and the diagram's depth for the largest (ft)
@@ -97,6 +110,7 @@ namespace LoadManager.App
                     side.Children.Add(Para($"The model has been saved since (revision {doc.Revision}): if the walls or the wind changed, save the shear wall design again.", true));
                 ConnectionsSummary();
             }
+            GravitySummary();
 
             // the envelope over all
             var lines = foundation.Walls.Where(w => w.Segments.Count > 0).ToList();

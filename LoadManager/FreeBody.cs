@@ -228,6 +228,65 @@ namespace LoadManager
             return list.OrderByDescending(HeldUp).ToList();
         }
 
+        /// <summary>Where on plan a gravity force acts: a step of a line load (uniform over it) at its middle, a point load at its place.</summary>
+        public Point2 WhereOf(FreeBodyForce f)
+        {
+            var m = MemberOf(f.Member);
+            if (m == null) return new Point2(0, 0);
+            return m.Kind == "column" ? m.Start : m.At(f.IsLine ? (f.A + f.B) / 2 : f.A);
+        }
+
+        /// <summary>
+        /// ΣM of the vertical forces in a combination about <see cref="Centre"/> (lb·ft, about x east and y north; vertical
+        /// forces give none about z): each load at its own place (a line load step by step). In a combination with W and a
+        /// wind case, the shear walls' forces too (<see cref="WindMoment"/> at the combination's W factor): the wind's shear on
+        /// top against its connections.
+        /// </summary>
+        public (double x, double y, double z) Moment(LoadCombination c)
+        {
+            var o = Centre;
+            double mx = 0, my = 0, mz = 0;
+            foreach (var f in Forces.Where(f => !f.Inside))
+            {
+                var p = WhereOf(f);
+                double fz = f.Up ? f.Resultant(c) : -f.Resultant(c);
+                mx += (p.Y - o.y) * fz;
+                my -= (p.X - o.x) * fz;
+            }
+            if (c != null && WindCase != null && c.Has(LoadType.Wind))
+            {
+                double k = c.Factor(LoadType.Wind);
+                var w = WindMoment(WindCase);
+                mx += k * w.x; my += k * w.y; mz += k * w.z;
+            }
+            return (mx, my, mz);
+        }
+
+        /// <summary>The size of the moments in a combination (lb·ft): Σ |force| × its distance from <see cref="Centre"/>, for the tolerance.</summary>
+        public double MomentScale(LoadCombination c)
+        {
+            var o = Centre;
+            double s = Forces.Where(f => !f.Inside).Sum(f => { var p = WhereOf(f); return Math.Abs(f.Resultant(c)) * Math.Sqrt((p.X - o.x) * (p.X - o.x) + (p.Y - o.y) * (p.Y - o.y)); });
+            if (c != null && WindCase != null && c.Has(LoadType.Wind)) s += Math.Abs(c.Factor(LoadType.Wind)) * WindMomentScale(WindCase);
+            return s;
+        }
+
+        /// <summary>
+        /// Why it is not in equilibrium in a combination (null: it is): ΣFz over 0.5 % of its largest force (at least 1 lb), or
+        /// ΣM over 0.5 % of <see cref="MomentScale"/> (at least 10 lb·ft), the wind's rule (<see cref="WindOutOfBalance"/>).
+        /// </summary>
+        public string OutOfBalance(LoadCombination c)
+        {
+            double big = Forces.Where(f => !f.Inside).Select(f => Math.Abs(f.Resultant(c))).DefaultIfEmpty(0).Max();
+            double fTol = Math.Max(1.0, 0.005 * big), mTol = Math.Max(10.0, 0.005 * MomentScale(c));
+            double fz = Imbalance(c);
+            if (Math.Abs(fz) > fTol) return $"ΣFz = {fz:+#,0;-#,0} lb in {c?.Name ?? "the service loads"}";
+            var m = Moment(c);
+            double mm = Math.Sqrt(m.x * m.x + m.y * m.y + m.z * m.z);
+            if (mm > mTol) return $"ΣM = {mm:#,0} lb·ft in {c?.Name ?? "the service loads"} (of {MomentScale(c):N0})";
+            return null;
+        }
+
         // ---------------------------------------------------------------- the wind
 
         /// <summary>The wind cases on it.</summary>

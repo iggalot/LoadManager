@@ -300,7 +300,11 @@ namespace LoadManager.App
             if (c != null && c.Has(LoadType.Wind) && fb.WindCase != null)
                 fbTable.Children.Add(Para($"The shear walls' connections in {fb.WindCase} at {c.Factor(LoadType.Wind):0.##}W (listed under Wind): {walls:+#,0;-#,0;0} lb up " +
                                           "(a wall's own couple adds to nothing here; its ΣM is under Wind).", true));
-            fbTable.Children.Add(Para($"ΣFz: down {down:N0} − up {up:N0}" + (Math.Abs(walls) > 0.5 ? $" − shear walls {walls:N0}" : "") + $" = {off:N0} lb " + (Math.Abs(off) <= Math.Max(1, 1e-6 * up) ? "(in equilibrium)." : "— not in equilibrium: see the notes."), bold: true));
+            var mo = fb.Moment(c);
+            string why = fb.OutOfBalance(c);
+            fbTable.Children.Add(Para($"ΣFz: down {down:N0} − up {up:N0}" + (Math.Abs(walls) > 0.5 ? $" − shear walls {walls:N0}" : "") + $" = {off:N0} lb; " +
+                                      $"ΣM = ({mo.x:N0}, {mo.y:N0}, {mo.z:N0}) lb·ft about its middle (x east, y north, z up; of {fb.MomentScale(c):N0}) " +
+                                      (why == null ? "(in equilibrium)." : $"— not in equilibrium ({why}): see the notes."), bold: true));
         }
 
         /// <summary>The wind case the free body's wind forces are listed in.</summary>

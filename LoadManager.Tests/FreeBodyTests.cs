@@ -176,6 +176,22 @@ namespace LoadManager.Tests
                     Assert.AreEqual(13.875, moOn / onBeam, 1e-6, "D: where it sits");
                 }
             }
+
+            // every member and the whole structure, ΣFz and ΣM in every gravity combination
+            var g = GravityBalance.Run(b, s, path);
+            Assert.AreEqual(0, g.Problems.Count, string.Join("\n", g.Problems.Select(p => p.Message)));
+            Assert.AreEqual(g.Bodies.Count, g.Balanced.Count);
+            Assert.AreEqual(b.Walls.Count + b.Beams.Count + b.Columns.Count, g.Bodies.Count);
+            Assert.IsNull(g.WholeOutOfBalance);
+
+            // a load put in the wrong place along its member: ΣFz still right, ΣM shows it
+            var d = LoadCombinations.Asd().First(x => x.Name == "D");
+            var moved = FreeBody.Of(b, s, path, bm.Id);
+            Assert.IsNull(moved.OutOfBalance(d));
+            var p0 = moved.Forces.First(f => f.Other == wall.Id);
+            p0.A += 3; p0.B += 3;
+            Assert.AreEqual(0, moved.Imbalance(d), Tol, "ΣFz does not see it");
+            StringAssert.StartsWith(moved.OutOfBalance(d) ?? "", "ΣM", "ΣM does");
         }
 
         /// <summary>
