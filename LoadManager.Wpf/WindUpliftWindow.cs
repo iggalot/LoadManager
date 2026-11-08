@@ -41,21 +41,28 @@ namespace LoadManager.Wpf
             var order = new FoundationLoadsWindow.IdOrder();
 
             // ---- the ties (C&C)
-            root.Children.Add(FoundationLoadsWindow.Head("Rafter and truss ties at the roof (components and cladding)"));
-            if (u.Cladding != null)
+            root.Children.Add(FoundationLoadsWindow.Head("Rafter and truss ties at the roof (the worse of C&C and MWFRS)"));
+            if (u.Ties.Count > 0)
             {
-                Text("The wind calculator's roof zones for components and cladding (ASCE 7 Ch. 30 Part 1, its edition and inputs), read at each rafter's " +
-                     "effective wind area: its span (to the next wall or beam, from the load path) × the larger of its spacing and a third of its span (26.2), " +
-                     "with internal pressure and the 16 psf minimum (30.2.2); the eaves at the overhang coefficients. The roof's share on each wall or beam " +
-                     $"(its tributary strip, the eaves included) against the roof's dead load; per rafter at the roof framing spacing, {u.Ties.Values.Select(t => t.SpacingIn).DefaultIfEmpty(24).First():0.#} in. (the model's default).", true);
+                Text("Each tie takes the components and cladding uplift where it is higher than the whole-building (MWFRS) uplift at the same wall or beam, " +
+                     "else the MWFRS case lifting it most: the worst case. " +
+                     (u.Cladding != null
+                        ? "C&C: the wind calculator's roof zones (ASCE 7 Ch. 30 Part 1, its edition and inputs), read at each rafter's effective wind area: its span " +
+                          "(to the next wall or beam, from the load path) × the larger of its spacing and a third of its span (26.2), with internal pressure and the " +
+                          "16 psf minimum (30.2.2); the eaves at the overhang coefficients. "
+                        : "No components and cladding results here: the MWFRS alone. ") +
+                     "The roof's share on each wall or beam (its tributary strip, the eaves included) against the roof's dead load; per rafter at the roof framing " +
+                     $"spacing, {u.Ties.Values.Select(t => t.SpacingIn).DefaultIfEmpty(24).First():0.#} in. (the model's default).", true);
                 var ties = u.Ties.Values.OrderBy(t => t.IsBeam).ThenBy(t => t.Id, order).ToList();
-                root.Children.Add(FoundationLoadsWindow.Table(new[] { "At the roof", "Rafter span, area", "Roof dead D (plf)", "Wind W (plf)", "0.6D + 0.6W (plf)", "Per rafter (lb)" },
+                root.Children.Add(FoundationLoadsWindow.Table(new[] { "At the roof", "Rafter span, area", "C&C: 0.6D + 0.6W (plf)", "MWFRS: 0.6D + 0.6W (plf)", "Governs", "Roof dead D (plf)", "Wind W (plf)", "0.6D + 0.6W (plf)", "Per rafter (lb)" },
                     ties.Select(t => new[]
                     {
-                        (t.IsBeam ? "beam " : "") + t.Id, $"{t.SpanFt:0.#} ft, {t.Area:0} sq ft", $"{t.Line.Dead:N0}", $"{t.Line.Wind:N0}", Net(t.Line.Net), Net(t.PerRafter),
+                        (t.IsBeam ? "beam " : "") + t.Id, $"{t.SpanFt:0.#} ft, {t.Area:0} sq ft",
+                        t.Cladding == null ? "none" : Net(t.Cladding.Net), t.Mwfrs == null ? "none" : $"{Net(t.Mwfrs.Net)} ({t.MwfrsCase?.Name})",
+                        t.Governs, $"{t.Line.Dead:N0}", $"{t.Line.Wind:N0}", Net(t.Line.Net), Net(t.PerRafter),
                     }), "Roof ties"));
             }
-            else Text("No components and cladding results: the ties are not found.", true);
+            else Text("No wind at the roof: the ties are not found.", true);
 
             if (u.HasWind)
             {

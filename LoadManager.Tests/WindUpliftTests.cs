@@ -190,6 +190,36 @@ namespace LoadManager.Tests
             Assert.AreEqual(12, t.SpanFt, Tol);                     // to the interior wall
             Assert.AreEqual(48, t.Area, Tol);                       // 12 × max(2, 12 / 3)
             Assert.AreEqual(21, u.Ties[n.Id].Area, Tol);            // 8 × 8 / 3 = 21.3, rounded
+            // the owner's rule: the C&C where it is higher than the MWFRS in the same place (here 45 > 35 psf)
+            Assert.AreEqual("C&C", t.Governs);
+            Assert.AreEqual(-72, t.Mwfrs.Net, Tol);
+            Assert.AreEqual("high", t.MwfrsCase.Name);
+            Assert.AreEqual(-108, t.Cladding.Net, Tol);
+        }
+
+        /// <summary>
+        /// The same with C&amp;C 25 psf up, under the 35 psf whole-building case: the MWFRS governs the tie, 0.6 × 90 − 0.6 × 210 =
+        /// −72 plf, −144 lb a rafter (owner: the worst case). With no C&amp;C at all, the MWFRS alone.
+        /// </summary>
+        [TestMethod]
+        public void Ties_TheMwfrs_WhereItIsHigherThanTheCandC()
+        {
+            var b = OneStory(out var l2, out var s, out _, out _);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 15 });
+            var lo = Uniform(-20); lo.Name = "low";
+            var hi = Uniform(-35); hi.Name = "high";
+            var u = WindUplift.Run(b, LoadSection.Read(b), new[] { lo, hi }, a => Uniform(-25));
+            var t = u.Ties[s.Id];
+            Assert.AreEqual("MWFRS", t.Governs);
+            Assert.AreEqual(-72, t.Line.Net, Tol);
+            Assert.AreEqual(-144, t.PerRafter, Tol);
+            Assert.AreEqual("high", t.Case.Name);
+            Assert.AreEqual(0.6 * 90 - 0.6 * 150, t.Cladding.Net, Tol, "the C&C kept beside it");
+
+            var none = WindUplift.Run(b, LoadSection.Read(b), new[] { lo, hi }, null);
+            Assert.AreEqual("MWFRS", none.Ties[s.Id].Governs);
+            Assert.IsNull(none.Ties[s.Id].Cladding);
+            Assert.AreEqual(-72, none.Ties[s.Id].Line.Net, Tol);
         }
 
         // ------------------------------------------------------------------ the wind calculator's pressures on the plan

@@ -16,21 +16,32 @@ namespace LoadManager
     }
 
     /// <summary>
-    /// The rafter or truss tie on a wall or beam at the roof (components and cladding): the roof's dead load and the C&amp;C suction on
-    /// the tributary strip (plf), and per rafter at the roof framing spacing.
+    /// The rafter or truss tie on a wall or beam at the roof: the roof's dead load and the wind's suction on the tributary strip
+    /// (plf), and per rafter at the roof framing spacing. The owner's rule (2026-11-07): the components and cladding uplift
+    /// (C&amp;C: a tie is a component, 26.2, Ch. 30) where it is higher than the whole-building (MWFRS) uplift in the same place,
+    /// else the MWFRS: the worst case. Both are kept, and which one governs.
     /// </summary>
     public sealed class RoofTie
     {
         public string Id { get; set; }
         public bool IsBeam { get; set; }
-        /// <summary>The roof's share only (the wall's own weight is under the tie).</summary>
+        /// <summary>The governing of the two (<see cref="Cladding"/>, <see cref="Mwfrs"/>): the roof's share only (the wall's own weight is under the tie).</summary>
         public LineLoad Line { get; set; } = new LineLoad();
+        /// <summary>The C&amp;C at the rafters' area and its case (null: none found).</summary>
+        public LineLoad Cladding { get; set; }
+        public RoofWindCase CladdingCase { get; set; }
+        /// <summary>The MWFRS case lifting it most and its load (null: no whole-building cases).</summary>
+        public LineLoad Mwfrs { get; set; }
+        public RoofWindCase MwfrsCase { get; set; }
+        /// <summary>The C&amp;C governs (its net uplift at least the MWFRS's); else the MWFRS.</summary>
+        public bool CladdingGoverns { get; set; }
+        public string Governs => CladdingGoverns ? "C&C" : "MWFRS";
         /// <summary>The roof framing spacing (in).</summary>
         public double SpacingIn { get; set; }
         /// <summary>The rafters' span (ft), the load path's longest landing on it, and their effective wind area (sq ft).</summary>
         public double SpanFt { get; set; }
         public double Area { get; set; }
-        /// <summary>The C&amp;C case at that area.</summary>
+        /// <summary>The governing case (<see cref="CladdingCase"/> or <see cref="MwfrsCase"/>).</summary>
         public RoofWindCase Case { get; set; }
         /// <summary>The net per rafter (lb, 0.6D + 0.6W; negative: up).</summary>
         public double PerRafter => Line.Net * SpacingIn / 12.0;
@@ -72,7 +83,7 @@ namespace LoadManager
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerExceptions[0]).Throw();
             }
             for (int i = 0; i < cases.Count; i++) u.Runs.Add((cases[i], paths[i]));
-            if (cladding == null || u.RoofLevelId == null) return u;
+            if (u.RoofLevelId == null) return u;
 
             // the rafters landing on each wall or beam at the roof, their span from the load path; one pass per area
             double spacing = b.Defaults?.RafterSpacing > 0 ? b.Defaults.RafterSpacing : 24;
@@ -80,7 +91,7 @@ namespace LoadManager
             var at = plain.Values.Where(x => x.LevelId == u.RoofLevelId && x.TributaryMax > 0).Select(x => (id: x.WallId, beam: false, span: x.FramingSpan))
                           .Concat(plain.Beams.Values.Where(x => x.LevelId == u.RoofLevelId && x.TributaryMax > 0).Select(x => (id: x.BeamId, beam: true, span: x.FramingSpan)))
                           .Select(x => (x.id, x.beam, x.span, area: Math.Round(RafterArea(x.span, spacing)))).Where(x => x.area > 0).ToList();
-            foreach (var group in at.GroupBy(x => x.area))
+            foreach (var group in at.GroupBy(x => x.area).Where(g => cladding != null))
             {
                 var c = cladding(group.Key);
                 if (c == null) continue;
@@ -90,8 +101,24 @@ namespace LoadManager
                 {
                     var line = x.beam ? (r.Beams.TryGetValue(x.id, out var m) ? m.FromLevel : null)
                                       : (r.TryGetValue(GravityLoadPath.Key(x.id, u.RoofLevelId), out var w) ? w.FromLevel : null);
-                    if (line != null) u.Ties[x.id] = new RoofTie { Id = x.id, IsBeam = x.beam, Line = line, SpacingIn = spacing, SpanFt = x.span, Area = x.area, Case = c };
+                    if (line != null) u.Ties[x.id] = new RoofTie { Id = x.id, IsBeam = x.beam, SpacingIn = spacing, SpanFt = x.span, Area = x.area, Cladding = line, CladdingCase = c };
                 }
+            }
+            // the MWFRS at each tie, the case lifting it most there; the tie takes the worse of the two (owner)
+            foreach (var x in at)
+            {
+                var m = u.Worst(p => x.beam ? (p.Beams.TryGetValue(x.id, out var bm) ? bm.FromLevel : null)
+                                            : (p.TryGetValue(GravityLoadPath.Key(x.id, u.RoofLevelId), out var w) ? w.FromLevel : null));
+                if (!u.Ties.TryGetValue(x.id, out var t))
+                {
+                    if (m?.Load == null) continue;
+                    u.Ties[x.id] = t = new RoofTie { Id = x.id, IsBeam = x.beam, SpacingIn = spacing, SpanFt = x.span, Area = x.area };
+                }
+                t.Mwfrs = m?.Load;
+                t.MwfrsCase = m?.Case;
+                t.CladdingGoverns = t.Cladding != null && (t.Mwfrs == null || t.Cladding.Net <= t.Mwfrs.Net + 1e-9);
+                t.Line = t.CladdingGoverns ? t.Cladding : t.Mwfrs;
+                t.Case = t.CladdingGoverns ? t.CladdingCase : t.MwfrsCase;
             }
             return u;
         }

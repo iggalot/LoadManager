@@ -62,7 +62,7 @@ namespace LoadManager.App
         private void OpenFreeBody(IEnumerable<string> ids)
         {
             var list = ids.Distinct().ToList();
-            var body = FreeBody.OfBody(B, LoadSection.Read(B), loadPath, list, lateral);
+            var body = BodyOf(list);
             if (body == null) { status.Text = $"{string.Join(", ", list)}: not a wall, beam or column the load path knows."; return; }
             fbIds = body.Members.Select(m => m.Id).ToList();
             fb = body;
@@ -79,6 +79,42 @@ namespace LoadManager.App
         }
 
         private void OpenFreeBody(string id) => OpenFreeBody(new[] { id });
+
+        /// <summary>
+        /// The free body of the members in the wind case picked (<see cref="fbWindCase"/>; the first of those on it when that
+        /// one is not): its gravity loads, the roof's wind in that case and the shear walls' forces in it, so the
+        /// combinations with W are there too. With no wind on it, the gravity alone.
+        /// </summary>
+        private FreeBody BodyOf(List<string> ids)
+        {
+            var s = LoadSection.Read(B);
+            var plain = FreeBody.OfBody(B, s, loadPath, ids, lateral);
+            if (plain == null) return null;
+            var cases = plain.WindCases;
+            if (cases.Count == 0 && uplift?.HasWind == true) cases = uplift.Runs.Select(r => r.Case.Name).ToList();
+            if (cases.Count == 0) return plain;
+            if (!cases.Contains(fbWindCase)) fbWindCase = cases[0];
+            return FreeBody.OfBody(B, s, loadPath, ids, lateral, uplift, fbWindCase);
+        }
+
+        /// <summary>The wind cases the free body can be taken in: the shear walls' on it, else the roof's.</summary>
+        private List<string> FreeBodyCases()
+        {
+            var cases = fb?.WindCases ?? new List<string>();
+            if (cases.Count == 0 && uplift?.HasWind == true) cases = uplift.Runs.Select(r => r.Case.Name).ToList();
+            return cases;
+        }
+
+        /// <summary>Another wind case: the free body again in it (the combinations with W follow), the same combination kept by name.</summary>
+        private void PickFreeBodyCase(string c)
+        {
+            if (c == null || c == fbWindCase) return;
+            fbWindCase = c;
+            RefreshFreeBody();
+            Title3D();
+            RefreshSide();
+            view3D.Show(B);
+        }
 
         /// <summary>The body is walls only (their framing can be drawn in place of the see-through blocks).</summary>
         private bool AllWalls => fb != null && fb.Members.All(m => m.Kind == "wall");
@@ -100,7 +136,7 @@ namespace LoadManager.App
         private void RefreshFreeBody()
         {
             if (fb == null) return;
-            var body = FreeBody.OfBody(B, LoadSection.Read(B), loadPath, fbIds, lateral);
+            var body = BodyOf(fbIds);
             if (body == null) { fbIds = new List<string>(); fb = null; view3D.OnlyIds = null; fbCombo = null; return; }
             fb = body;
             fbIds = body.Members.Select(m => m.Id).ToList();
@@ -137,7 +173,8 @@ namespace LoadManager.App
 
         private void FreeBodyTitle()
         {
-            title3D.Text = $"FREE BODY of {FreeBodyName}: " + (fbCombo == null ? "service loads" : fbCombo.Name);
+            title3D.Text = $"FREE BODY of {FreeBodyName}: " + (fbCombo == null ? "service loads" : fbCombo.Name) +
+                           (fbCombo != null && fbCombo.Has(LoadType.Wind) && fb?.WindCase != null ? $" · W: {fb.WindCase}" : "");
             sub3D.Text = "The selected members, alone, cut from the rest of the structure (WISE): E the loads applied to it in blue; W its own weight in green; " +
                          "S the foundation's reactions in red; I in purple, where it is cut, the reactions of the members connected to it that are not selected. " +
                          (fbShowInside ? "The pairs between two selected members are drawn in grey, both halves: they cancel. " : "The pairs between two selected members cancel and are not drawn. ") +
@@ -215,7 +252,9 @@ namespace LoadManager.App
                     ShowFreeBodyCombo(fbCombos[comboList.SelectedIndex]);
                 };
                 side.Children.Add(comboList);
-                side.Children.Add(Para($"The gravity combinations ({MethodName}) with the loads on it, the most held up first. The roof's wind is not in these (Wind uplift).", true));
+                side.Children.Add(Para($"The combinations ({MethodName}) with the loads on it, the most held up first. " +
+                                       (fb.WindCase == null ? "No wind on it: the gravity combinations only."
+                                        : $"With W: the wind case picked under Wind below, {fb.WindCase}: the roof's wind in it (its uplift pass, in the same parts as the gravity) and the shear walls' forces in it."), true));
             }
 
             fbTable = new StackPanel();
@@ -257,8 +296,11 @@ namespace LoadManager.App
             if (fbShowInside && fb.InsideForces.Any())
                 Rows("", "Inside the body: both halves of each pair between two selected members (they cancel, not in the sums)", new SolidColorBrush(InsideColor),
                      fb.InsideForces.ToList(), "");
-            double down = fb.Forces.Where(f => !f.Inside && !f.Up).Sum(f => f.Resultant(c)), up = fb.HeldUp(c), off = fb.Imbalance(c);
-            fbTable.Children.Add(Para($"ΣFz: down {down:N0} − up {up:N0} = {off:N0} lb " + (Math.Abs(off) <= Math.Max(1, 1e-6 * up) ? "(in equilibrium)." : "— not in equilibrium: see the notes."), bold: true));
+            double down = fb.Forces.Where(f => !f.Inside && !f.Up).Sum(f => f.Resultant(c)), up = fb.HeldUp(c), off = fb.Imbalance(c), walls = fb.ConnectionsUp(c);
+            if (c != null && c.Has(LoadType.Wind) && fb.WindCase != null)
+                fbTable.Children.Add(Para($"The shear walls' connections in {fb.WindCase} at {c.Factor(LoadType.Wind):0.##}W (listed under Wind): {walls:+#,0;-#,0;0} lb up " +
+                                          "(a wall's own couple adds to nothing here; its ΣM is under Wind).", true));
+            fbTable.Children.Add(Para($"ΣFz: down {down:N0} − up {up:N0}" + (Math.Abs(walls) > 0.5 ? $" − shear walls {walls:N0}" : "") + $" = {off:N0} lb " + (Math.Abs(off) <= Math.Max(1, 1e-6 * up) ? "(in equilibrium)." : "— not in equilibrium: see the notes."), bold: true));
         }
 
         /// <summary>The wind case the free body's wind forces are listed in.</summary>
@@ -273,22 +315,31 @@ namespace LoadManager.App
         private void FreeBodyWindSide()
         {
             var cases = fb.WindCases;
+            var all = FreeBodyCases();
             side.Children.Add(Head("Wind"));
             fbWindTable = null;
-            if (cases.Count == 0)
+            string none = lateral == null
+                ? "No shear wall design saved (the shear wall app's Lateral section): no shear wall forces on it yet."
+                : "No wind forces on it in the shear wall design (no shear wall in it, and no hold-down lands on it).";
+            if (cases.Count == 0 && all.Count > 0)
             {
-                side.Children.Add(Para(lateral == null
-                    ? "No shear wall design saved (the shear wall app's Lateral section): no wind forces on it yet."
-                    : "No wind forces on it in the shear wall design (no shear wall in it, and no hold-down lands on it).", true));
+                // the roof's wind only: the case is the combinations' W
+                var only = new ComboBox { Margin = new Thickness(0, 0, 0, 4) };
+                foreach (var c in all) only.Items.Add(c);
+                only.SelectedItem = fbWindCase;
+                only.SelectionChanged += (s, e) => PickFreeBodyCase(only.SelectedItem as string);
+                side.Children.Add(only);
+                side.Children.Add(Para("The roof's wind in this case is the W of the combinations above. " + none, true));
                 return;
             }
+            if (cases.Count == 0) { side.Children.Add(Para(none, true)); return; }
             if (!cases.Contains(fbWindCase)) fbWindCase = cases[0];
             var pick = new ComboBox { Margin = new Thickness(0, 0, 0, 4) };
             foreach (var c in cases) pick.Items.Add(c);
             pick.SelectedItem = fbWindCase;
-            pick.SelectionChanged += (s, e) => { fbWindCase = pick.SelectedItem as string; RefreshFreeBodyWind(); };
+            pick.SelectionChanged += (s, e) => PickFreeBodyCase(pick.SelectedItem as string);
             side.Children.Add(pick);
-            side.Children.Add(Para("The shear wall design's forces in this wind case, W at strength level, no dead load (the gravity is above). " +
+            side.Children.Add(Para("The shear wall design's forces in this wind case, W at strength level, no dead load (the gravity is above; this case is also the W of its combinations). " +
                                    "Each connection is half of a pair: the member at its other end has the same force the other way.", true));
             fbWindTable = new StackPanel();
             side.Children.Add(fbWindTable);
@@ -391,21 +442,25 @@ namespace LoadManager.App
                     Draw(f, atTop ? top : f.Z - Building3DView.SlabThickness, true);
                 }
 
+                // a negative one (the roof's wind lifting the top, the foundation pulling it down) the other way: from the face, away from it
                 void Draw(FreeBodyForce x, double tip, bool down)
                 {
+                    bool away = v < 0;
                     if (x.IsLine)
                     {
-                        double h = v * kL;
+                        double h = Math.Abs(v) * kL;
                         var a = At(x.A, side); var b = At(x.B, side);
-                        if (down) LineArrows(g, a, b, tip + h, tip, ink);
-                        else LineArrows(g, a, b, tip - h, tip, ink);
+                        double far = down ? tip + h : tip - h;
+                        if (away) LineArrows(g, a, b, tip, far, ink);
+                        else LineArrows(g, a, b, far, tip, ink);
                     }
                     else
                     {
-                        double len = Math.Max(1.0, v * kP);
+                        double len = Math.Max(1.0, Math.Abs(v) * kP);
                         var p = At(x.A, side);
-                        if (down) Arrow(g, p, tip + len, tip, ink, 0.14, 0.45);
-                        else Arrow(g, p, tip - len, tip, ink, 0.14, 0.45);
+                        double far = down ? tip + len : tip - len;
+                        if (away) Arrow(g, p, tip, far, ink, 0.14, 0.45);
+                        else Arrow(g, p, far, tip, ink, 0.14, 0.45);
                     }
                 }
             }

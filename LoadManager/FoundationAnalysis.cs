@@ -68,7 +68,13 @@ namespace LoadManager
             return most ? Math.Max(a, b) : Math.Min(a, b);
         }
 
-        public static ServiceLoad Of(GravityLoad g) => new ServiceLoad { Dead = g?.Dead ?? 0, Live = g?.Live ?? 0, RoofLive = g?.RoofLive ?? 0, Snow = g?.Snow ?? 0 };
+        public static ServiceLoad Of(GravityLoad g) => new ServiceLoad { Dead = g?.Dead ?? 0, Live = g?.Live ?? 0, RoofLive = g?.RoofLive ?? 0, Snow = g?.Snow ?? 0, PathWind = g?.Wind ?? 0 };
+
+        /// <summary>
+        /// The roof's wind an uplift pass carried down with it (<see cref="GravityLoad.Wind"/>, + down), not yet given a case:
+        /// the free bodies take it into one wind case (<see cref="FreeBody.OfBody"/>). Not in any combination by itself.
+        /// </summary>
+        public double PathWind { get; set; }
 
         public ServiceLoad WithWind(double min, double max) => new ServiceLoad { Dead = Dead, Live = Live, RoofLive = RoofLive, Snow = Snow, WindMin = min, WindMax = max };
 

@@ -38,7 +38,11 @@
   `BuildingModel.Core`). `ConnectionBalance` checks every member and the whole structure in every case (ΣF, ΣM about three
   axes: `FreeBody.WindOutOfBalance`, one rule for the check and the window); `FoundationCheck.Run` includes it. In the
   window: Ctrl or Shift + click members in the 3D foundation for one body; View > Internal forces is the plans' and the
-  free bodies' one setting.
+  free bodies' one setting. In a wind case (`OfBody(..., uplift, windCase)`) a free body has the gravity, the roof's wind
+  in that case (its uplift pass) and the shear walls' connections in it, so its combinations with W balance too
+  (`Imbalance`, `ConnectionsUp`); in the window, the case picked under Wind is the combinations' W.
+- **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
+  or beam, else the MWFRS (`Governs`).
 - **Build:** `MSBuild LoadManager.sln -restore`.
 - **Test:** `vstest LoadManager.Tests\bin\Debug\net472\LoadManager.Tests.dll`.
 - **The suite's TODO list** is `..\ShearWallCalculator\ROADMAP.md`.

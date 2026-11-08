@@ -49,10 +49,18 @@ namespace LoadManager
         /// <summary>It acts upward (what holds the member up); else downward.</summary>
         public bool Up { get; set; }
 
-        /// <summary>Its size in a combination (plf or lb), the gravity loads only (D, L, Lr, S), the factors as written.</summary>
+        /// <summary>
+        /// Its size in a combination (plf or lb), the factors as written: the gravity loads (D, L, Lr, S) and, on a free body
+        /// in one wind case (<see cref="FreeBody.WindCase"/>), the roof's wind in it (W: <see cref="ServiceLoad.Winds"/>). The
+        /// service loads (no combination): the gravity loads only.
+        /// </summary>
         public double Value(LoadCombination c) =>
             c == null ? Load.Dead + Load.Live + Load.RoofLive + Load.Snow
-            : c.Factor(LoadType.Dead) * Load.Dead + c.Factor(LoadType.Live) * Load.Live + c.Factor(LoadType.RoofLive) * Load.RoofLive + c.Factor(LoadType.Snow) * Load.Snow;
+            : c.Factor(LoadType.Dead) * Load.Dead + c.Factor(LoadType.Live) * Load.Live + c.Factor(LoadType.RoofLive) * Load.RoofLive + c.Factor(LoadType.Snow) * Load.Snow
+              + (Load.Winds == null || Load.Winds.Count == 0 ? 0 : c.Factor(LoadType.Wind) * Load.Winds.Values.Sum());
+
+        /// <summary>The roof's wind in it (W, one wind case: <see cref="FreeBody.WindCase"/>), not the gravity loads.</summary>
+        public bool IsWind => Load.Winds != null && Load.Winds.Count > 0;
 
         /// <summary>Its resultant in a combination (lb), + in the way it acts.</summary>
         public double Resultant(LoadCombination c) => Value(c) * (IsLine ? B - A : 1);
@@ -167,8 +175,23 @@ namespace LoadManager
         /// <summary>The pairs inside it (both halves), for a drawing that shows them.</summary>
         public IEnumerable<FreeBodyForce> InsideForces => Forces.Where(f => f.Inside);
 
-        /// <summary>The sum of the vertical forces in a combination (lb, + down): 0 in equilibrium.</summary>
-        public double Imbalance(LoadCombination c) => Forces.Where(f => !f.Inside).Sum(f => f.Up ? -f.Resultant(c) : f.Resultant(c));
+        /// <summary>
+        /// The sum of the vertical forces in a combination (lb, + down): 0 in equilibrium. In a wind case
+        /// (<see cref="WindCase"/>) and a combination with W: the roof's wind too, and the shear walls' connections in that case
+        /// at the combination's W factor (<see cref="ConnectionsUp"/>).
+        /// </summary>
+        public double Imbalance(LoadCombination c) => Forces.Where(f => !f.Inside).Sum(f => f.Up ? -f.Resultant(c) : f.Resultant(c)) - ConnectionsUp(c);
+
+        /// <summary>
+        /// The wind case the free body is in (a shear wall case, "… (rigid)" or "… (flexible)", or the wind calculator's own),
+        /// null: the gravity loads alone. Its roof's wind is in the forces (<see cref="FreeBodyForce.IsWind"/>), its shear
+        /// walls' connections in <see cref="Connections"/>; the combinations with W take both.
+        /// </summary>
+        public string WindCase { get; set; }
+
+        /// <summary>The shear walls' connections on it (not those inside), in <see cref="WindCase"/> at the combination's W factor (lb, + up); 0 with no case or no W.</summary>
+        public double ConnectionsUp(LoadCombination c) =>
+            c == null || WindCase == null ? 0 : c.Factor(LoadType.Wind) * Connections.Where(k => !k.Inside).Sum(k => k.On(WindCase));
 
         /// <summary>The total of one part in a combination (lb, + the way its forces act).</summary>
         public double Total(FreeBodyPart part, LoadCombination c) => Of(part).Sum(f => f.Resultant(c));
@@ -189,14 +212,18 @@ namespace LoadManager
         }
 
         /// <summary>
-        /// The combinations of the method made only of D, L, Lr and S whose loads are on it, the one holding it up most first.
+        /// The combinations of the method made only of D, L, Lr and S whose loads are on it, and in a wind case
+        /// (<see cref="WindCase"/>) those with W too when the wind is on it (the roof's or the shear walls'), the one holding it
+        /// up most first.
         /// </summary>
         public List<LoadCombination> Combinations(DesignMethod method)
         {
             var k = Kinds();
-            var gravity = new HashSet<LoadType> { LoadType.Dead, LoadType.Live, LoadType.RoofLive, LoadType.Snow };
+            var allowed = new HashSet<LoadType> { LoadType.Dead, LoadType.Live, LoadType.RoofLive, LoadType.Snow };
+            bool wind = WindCase != null && (Forces.Any(f => !f.Inside && f.IsWind) || Connections.Any(x => !x.Inside && Math.Abs(x.On(WindCase)) > 1e-9));
+            if (wind) allowed.Add(LoadType.Wind);
             var list = (method == DesignMethod.Asd ? LoadCombinations.Asd() : LoadCombinations.Asce7Strength())
-                .Where(c => c.Types.All(gravity.Contains) && c.Types.All(t => k.Has(t)))
+                .Where(c => c.Types.All(allowed.Contains) && c.Types.All(t => t == LoadType.Wind || k.Has(t)))
                 .ToList();
             return list.OrderByDescending(HeldUp).ToList();
         }
@@ -315,6 +342,34 @@ namespace LoadManager
                 bodies.Add(one);
             }
             return Join(bodies);
+        }
+
+        /// <summary>
+        /// The same free body in one wind case (<paramref name="windCase"/>: a shear wall case, "… (rigid)" or "… (flexible)",
+        /// or the wind calculator's own): its gravity loads as <see cref="OfBody(Building, LoadSection, GravityLoadPath.Result, IEnumerable{string}, LateralSection)"/>,
+        /// and the roof's wind in that case from its uplift pass (<paramref name="uplift"/>, the run of the wind calculator's
+        /// case, <see cref="LateralSection.WindOf"/>): the same forces again, each with its wind alone (W, in the same parts:
+        /// the roof's on it E, the cut's I, the foundation's S). The load path is linear, so the gravity, the roof's wind and the
+        /// shear walls' connections each balance, and so does every combination of them (<see cref="Imbalance"/>).
+        /// </summary>
+        public static FreeBody OfBody(Building b, LoadSection s, GravityLoadPath.Result path, IEnumerable<string> ids, LateralSection lateral,
+                                      WindUplift uplift, string windCase)
+        {
+            var list = (ids ?? Enumerable.Empty<string>()).ToList();
+            var fb = OfBody(b, s, path, list, lateral);
+            if (fb == null || windCase == null) return fb;
+            fb.WindCase = windCase;
+            string roof = LateralSection.WindOf(windCase);
+            var run = uplift == null ? default : uplift.Runs.FirstOrDefault(r => r.Case?.Name == roof || r.Case?.Name == windCase);
+            if (run.Path == null) { fb.Notes.Add($"No roof wind in {windCase} (no uplift pass for it): the shear walls' forces only."); return fb; }
+            var w = OfBody(b, s, run.Path, list, null);
+            foreach (var f in w?.Forces.Where(f => Math.Abs(f.Load.PathWind) > 1e-9) ?? Enumerable.Empty<FreeBodyForce>())
+                fb.Forces.Add(new FreeBodyForce
+                {
+                    Part = f.Part, What = $"{f.What}: the roof's wind", Member = f.Member, Other = f.Other, Inside = f.Inside, Z = f.Z, A = f.A, B = f.B, Up = f.Up,
+                    Load = new ServiceLoad { Winds = new Dictionary<string, double> { [windCase] = f.Load.PathWind } },
+                });
+            return fb;
         }
 
         /// <summary>
