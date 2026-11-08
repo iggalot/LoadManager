@@ -46,6 +46,21 @@ namespace LoadManager.App
                                    (g.WholeOutOfBalance == null ? ", and the whole structure." : "."), true));
             foreach (var p in g.Problems)
                 side.Children.Add(new TextBlock { Text = p.Message, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
+
+            // the upper beams and columns carrying hold-downs: the net force on each support at worst (step 5)
+            var up = UpperUplift.Run(B, loadPath, uplift, lateral, method);
+            if (up.Count == 0) return;
+            side.Children.Add(Para("Beam ends and upper column bases carrying hold-downs: the net force on each support at worst, every combination with W in " +
+                                   "every wind case (its gravity reaction, the roof's wind, the hold-downs' pair). The shear wall app sizes their connection " +
+                                   "for the hold-downs alone.", true));
+            var rows = new List<string[]> { new[] { "", "On", "At worst (lb)", "Hold-downs alone", "Connection" } };
+            rows.AddRange(up.Select(p => new[]
+            {
+                p.From, p.Onto ?? "", p.Lifts ? $"{-p.Least:N0} up" : $"{p.Least:N0} down", $"{p.HoldownAlone:N0} up", string.IsNullOrEmpty(p.Connector) ? (p.Lifts ? "none: tie it down" : "none (bears)") : p.Connector,
+            }));
+            side.Children.Add(Mini(rows, new double[] { 110, 0, 0, 0, 0 }));
+            foreach (var p in up.Where(p => p.Lifts))
+                side.Children.Add(Para($"{p.From}: worst in {p.LeastIn}.", true));
         }
 
         private static readonly Color UpColor = Wpf.EnvelopeDiagram.Up;

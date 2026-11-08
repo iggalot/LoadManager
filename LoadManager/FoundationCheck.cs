@@ -38,6 +38,8 @@ namespace LoadManager
         public ConnectionBalanceResult Connections { get; set; }
         /// <summary>Every member and the whole structure in equilibrium under the gravity loads (ΣFz, ΣM): <see cref="GravityBalance"/>.</summary>
         public GravityBalanceResult Gravity { get; set; }
+        /// <summary>The upper beam ends and column bases carrying hold-downs: the net force on each support at worst (<see cref="UpperUplift"/>).</summary>
+        public List<UpperUpliftPoint> Upper { get; set; } = new List<UpperUpliftPoint>();
     }
 
     /// <summary>
@@ -106,6 +108,9 @@ namespace LoadManager
             r.Problems.AddRange(Problems(r.Analysis));
             r.Connections = ConnectionBalance.Run(b, r.Lateral);
             r.Gravity = GravityBalance.Run(b, s, path, method);
+            r.Upper = UpperUplift.Run(b, path, uplift, r.Lateral, method);
+            foreach (var p in r.Upper.Where(p => p.Lifts && string.IsNullOrEmpty(p.Connector)))
+                r.Problems.Add(new FoundationProblem { Id = p.Id, Message = $"{p.From} pulls up {-p.Least:N0} lb on {p.Onto ?? "what is under it"} ({p.LeastIn}) and has no connection: tie it down there." });
             return r;
         }
 
