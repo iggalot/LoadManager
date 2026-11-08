@@ -87,9 +87,11 @@ namespace LoadManager
 
         /// <summary>
         /// The foundation for <paramref name="b"/> as it is: its loads, the wind found now (<paramref name="wind"/>, or found
-        /// here), and <paramref name="lateral"/> (null: the shear walls' forces saved in the file).
+        /// here), and <paramref name="lateral"/> (null: the shear walls' forces saved in the file), with what carries them
+        /// (<paramref name="connections"/>, null: the file's).
         /// </summary>
-        public static FoundationCheckResult Run(Building b, LateralSection lateral = null, DesignMethod method = DesignMethod.Asd, WindCheckResult wind = null)
+        public static FoundationCheckResult Run(Building b, LateralSection lateral = null, DesignMethod method = DesignMethod.Asd, WindCheckResult wind = null,
+            WoodFraming.Connections.ConnectionsSection connections = null)
         {
             var r = new FoundationCheckResult();
             if (b == null) { r.NotChecked = "no project"; return r; }
@@ -106,7 +108,7 @@ namespace LoadManager
             r.LoadPath = path;
             r.Uplift = uplift;
             r.Problems.AddRange(Problems(r.Analysis));
-            r.Connections = ConnectionBalance.Run(b, r.Lateral);
+            r.Connections = ConnectionBalance.Run(b, r.Lateral, connections);
             r.Gravity = GravityBalance.Run(b, s, path, method);
             r.Upper = UpperUplift.Run(b, path, uplift, r.Lateral, method);
             foreach (var p in r.Upper.Where(p => p.Lifts && string.IsNullOrEmpty(p.Connector)))

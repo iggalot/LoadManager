@@ -42,7 +42,8 @@ namespace LoadManager
     /// </summary>
     public static class ConnectionBalance
     {
-        public static ConnectionBalanceResult Run(Building b, LateralSection lateral)
+        /// <param name="connections">What carries each shear pair, for its words (null: the file's; WoodFraming.Connections).</param>
+        public static ConnectionBalanceResult Run(Building b, LateralSection lateral, WoodFraming.Connections.ConnectionsSection connections = null)
         {
             var r = new ConnectionBalanceResult { Pairs = ConnectionPairs.Of(lateral) };
             r.Cases = ConnectionPairs.Cases(r.Pairs);
@@ -87,7 +88,7 @@ namespace LoadManager
                 r.Problems.Add(new FoundationProblem { Id = null, Message = $"The whole structure does not balance the wind: {r.WholeOutOfBalance}." });
 
             // every diaphragm: its own wind, the walls under it pushing back at their tops, those above pushing on it at their sills
-            r.ShearPairs = BuildingModel.Model.ShearPairs.Of(b, lateral);
+            r.ShearPairs = BuildingModel.Model.ShearPairs.Of(b, lateral, WoodFraming.Connections.ConnectionsSection.Describer(b, connections));
             foreach (var d in lateral.Diaphragms ?? new List<DiaphragmWind>())
             {
                 string why = DiaphragmOutOfBalance(d, r.ShearPairs);

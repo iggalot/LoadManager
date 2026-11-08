@@ -533,7 +533,7 @@ namespace LoadManager
             bool ew = Math.Abs(fb.End.X - fb.Start.X) >= Math.Abs(fb.End.Y - fb.Start.Y);
             double sign = (ew ? fb.End.X - fb.Start.X : fb.End.Y - fb.Start.Y) >= 0 ? 1 : -1;
             var dir = new Point2((fb.End.X - fb.Start.X) / fb.Length, (fb.End.Y - fb.Start.Y) / fb.Length);
-            var shearPairs = ShearPairs.Of(b, lateral).Where(p => p.WallId == fb.Id).ToList();
+            var shearPairs = ShearPairs.Of(b, lateral, WoodFraming.Connections.ConnectionsSection.Describer(b)).Where(p => p.WallId == fb.Id).ToList();
             foreach (var d in (lateral?.Walls ?? new List<ShearWallDesign>()).Where(d => d.WallId == fb.Id && d.ShearOnTop != null && d.ShearOnTop.Count > 0))
             {
                 var lv = b.Level(d.LevelId);

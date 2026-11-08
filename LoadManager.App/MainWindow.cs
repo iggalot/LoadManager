@@ -277,6 +277,7 @@ namespace LoadManager.App
             var c = ModelFile.Clone(b);
             c.SetData(LoadSection.Key, null);
             c.SetData(LateralSection.Key, null);
+            c.SetData(WoodFraming.Connections.ConnectionsSection.Key, null);
             return c;
         }
 

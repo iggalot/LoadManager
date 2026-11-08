@@ -45,7 +45,10 @@
   Upper beam ends and column bases carrying hold-downs: the net force on each support at worst (`UpperUplift`, step 5;
   SWC sizes their connection for the hold-downs alone: conservative, the owner's choice for now). Every diaphragm too
   (step 6): its own wind (`Lateral.Diaphragms`), the walls' shears under it and from above as pairs (`ShearPairs`, in
-  `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`).
+  `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`). What carries
+  each pair, in words, comes from the connection details (`WoodFraming.Connections`, `ConnectionsSection.Describer`: the
+  file's "Connections", or a fresh design's passed to `FoundationCheck.Run` / `ConnectionBalance.Run`); the details are
+  not the model's.
 - **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
   or beam, else the MWFRS (`Governs`); place by place along it too (`Along`, `RoofTieStep`: cut where any of them changes).
 - **Build:** `MSBuild LoadManager.sln -restore`.
