@@ -533,22 +533,25 @@ namespace LoadManager
             bool ew = Math.Abs(fb.End.X - fb.Start.X) >= Math.Abs(fb.End.Y - fb.Start.Y);
             double sign = (ew ? fb.End.X - fb.Start.X : fb.End.Y - fb.Start.Y) >= 0 ? 1 : -1;
             var dir = new Point2((fb.End.X - fb.Start.X) / fb.Length, (fb.End.Y - fb.Start.Y) / fb.Length);
+            var shearPairs = ShearPairs.Of(b, lateral).Where(p => p.WallId == fb.Id).ToList();
             foreach (var d in (lateral?.Walls ?? new List<ShearWallDesign>()).Where(d => d.WallId == fb.Id && d.ShearOnTop != null && d.ShearOnTop.Count > 0))
             {
                 var lv = b.Level(d.LevelId);
+                var topPair = shearPairs.FirstOrDefault(p => p.AtTop && p.LevelId == d.LevelId);
+                var sillPair = topPair == null ? null : shearPairs.ElementAtOrDefault(shearPairs.IndexOf(topPair) + 1); // made in pairs: top, then sill
                 double bas = BaseOfStory(b, fb, lv);
                 // the shear acts at the top of its story, its design's height over the story's base
                 double z = d.HeightFt > 0 ? bas + d.HeightFt : lv?.Elevation ?? fb.Top;
                 fb.Shears.Add(new FreeBodyShear
                 {
-                    Part = FreeBodyPart.External, What = $"The wind's shear from the {lv?.Name ?? "level"} diaphragm", Member = fb.Id, Z = z,
+                    Part = FreeBodyPart.External, What = $"The wind's shear from the {lv?.Name ?? "level"} diaphragm" + (topPair == null ? "" : $" ({topPair.Connector})"), Member = fb.Id, Z = z,
                     Origin = fb.Start, Dir = dir, ByCase = d.ShearOnTop.ToDictionary(kv => kv.Key, kv => sign * kv.Value),
                 });
                 bool onGround = bas <= 1e-6;
                 fb.Shears.Add(new FreeBodyShear
                 {
                     Part = onGround ? FreeBodyPart.Support : FreeBodyPart.Internal,
-                    What = onGround ? "The sill's shear into the foundation" : $"The sill's shear into the floor framing under it (cut)",
+                    What = (onGround ? "The sill's shear into the foundation" : $"The sill's shear into the floor framing under it (cut)") + (sillPair == null ? "" : $" ({sillPair.Connector})"),
                     Member = fb.Id, Z = bas, Origin = fb.Start, Dir = dir,
                     ByCase = d.ShearOnTop.ToDictionary(kv => kv.Key, kv => -sign * kv.Value),
                 });

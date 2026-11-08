@@ -26,6 +26,11 @@ namespace LoadManager
         public string WholeOutOfBalance { get; set; }
         /// <summary>The lateral design was saved before it kept the cases: nothing to check.</summary>
         public bool NoCases { get; set; }
+
+        /// <summary>The shear walls' horizontal pairs: each wall's top into its diaphragm, its sill into the floor or the foundation (<see cref="ShearPairs"/>).</summary>
+        public List<ShearPair> ShearPairs { get; set; } = new List<ShearPair>();
+        /// <summary>The levels whose diaphragm balances the wind in every case (ΣFx, ΣFy; ΣMz where the wind's place is known).</summary>
+        public List<string> DiaphragmsBalanced { get; } = new List<string>();
     }
 
     /// <summary>
@@ -80,7 +85,34 @@ namespace LoadManager
             r.WholeOutOfBalance = r.Whole == null ? null : r.Cases.Select(r.Whole.WindOutOfBalance).FirstOrDefault(x => x != null);
             if (r.WholeOutOfBalance != null)
                 r.Problems.Add(new FoundationProblem { Id = null, Message = $"The whole structure does not balance the wind: {r.WholeOutOfBalance}." });
+
+            // every diaphragm: its own wind, the walls under it pushing back at their tops, those above pushing on it at their sills
+            r.ShearPairs = BuildingModel.Model.ShearPairs.Of(b, lateral);
+            foreach (var d in lateral.Diaphragms ?? new List<DiaphragmWind>())
+            {
+                string why = DiaphragmOutOfBalance(d, r.ShearPairs);
+                if (why == null) { r.DiaphragmsBalanced.Add(d.LevelId); continue; }
+                r.Problems.Add(new FoundationProblem { Id = d.LevelId, Message = $"The {b.Level(d.LevelId)?.Name ?? d.LevelId} diaphragm does not balance the wind: {why}." });
+            }
             return r;
+        }
+
+        /// <summary>
+        /// Why one diaphragm does not balance the wind (null: it does, in every case): ΣFx, ΣFy, and ΣMz about its wind's point
+        /// where the analysis puts the wind at a known place (<see cref="DiaphragmWind.Mz"/>); the wind's rule (0.5 %).
+        /// </summary>
+        public static string DiaphragmOutOfBalance(DiaphragmWind d, IEnumerable<ShearPair> pairs)
+        {
+            var list = (pairs ?? Enumerable.Empty<ShearPair>()).ToList();
+            foreach (var c in (d?.Fx?.Keys ?? Enumerable.Empty<string>()).Union(d?.Fy?.Keys ?? Enumerable.Empty<string>()))
+            {
+                var (fx, fy, mz, scale, mScale) = BuildingModel.Model.ShearPairs.Balance(d, list, c);
+                double fTol = Math.Max(1.0, 0.005 * scale), mTol = Math.Max(10.0, 0.005 * mScale);
+                if (Math.Abs(fx) > fTol) return $"ΣFx = {fx:+#,0;-#,0} lb in {c}";
+                if (Math.Abs(fy) > fTol) return $"ΣFy = {fy:+#,0;-#,0} lb in {c}";
+                if (mz is double m && Math.Abs(m) > mTol) return $"ΣMz = {m:+#,0;-#,0} lb·ft in {c} (of {mScale:N0})";
+            }
+            return null;
         }
     }
 }

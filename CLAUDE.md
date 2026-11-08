@@ -42,7 +42,10 @@
   in that case (its uplift pass) and the shear walls' connections in it, so its combinations with W balance too
   (`Imbalance`, `ConnectionsUp`); in the window, the case picked under Wind is the combinations' W. Gravity free bodies check
   ΣFz and ΣM too (`FreeBody.OutOfBalance`), every member and the whole structure by `GravityBalance` (in `FoundationCheck.Run`).
-  Upper beam ends and column bases carrying hold-downs: the net force on each support at worst (`UpperUplift`, step 5).
+  Upper beam ends and column bases carrying hold-downs: the net force on each support at worst (`UpperUplift`, step 5;
+  SWC sizes their connection for the hold-downs alone: conservative, the owner's choice for now). Every diaphragm too
+  (step 6): its own wind (`Lateral.Diaphragms`), the walls' shears under it and from above as pairs (`ShearPairs`, in
+  `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`).
 - **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
   or beam, else the MWFRS (`Governs`).
 - **Build:** `MSBuild LoadManager.sln -restore`.
