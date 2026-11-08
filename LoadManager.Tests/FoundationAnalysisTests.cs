@@ -164,6 +164,30 @@ namespace LoadManager.Tests
             }
         }
 
+        /// <summary>
+        /// The shear walls share each wind two ways (the diaphragm rigid and flexible), saved apart (owner 2026-11-07: the same
+        /// wind, two analyses, never mixed): the wind case is taken once for each, with the same roof pressures.
+        /// </summary>
+        [TestMethod]
+        public void WindCases_OncePerWayTheWallsShareIt_TheSameRoof()
+        {
+            var b = OneStory(out var s);
+            var sec = LoadSection.Read(b);
+            var up = WindUplift.Run(b, sec, new[] { new RoofWindCase { Name = "A", From = "W", PressureAt = (x, y) => -30 } }, null);
+            var lat = new LateralSection
+            {
+                Source = "test", Cases = new List<string> { "A (rigid)", "A (flexible)" },
+                Points = { new LateralPoint { From = "SW1 end", WallId = s.Id, X = 0.2, Y = 0, Up = new Dictionary<string, double> { ["A (rigid)"] = 1000, ["A (flexible)"] = 1400 } } },
+            };
+            var r = FoundationAnalysis.Run(b, sec, up, lat, DesignMethod.Asd);
+            CollectionAssert.AreEqual(new[] { "A (rigid)", "A (flexible)" }, r.WindCases.Select(w => w.Name).ToArray());
+            Assert.IsTrue(r.WindCases.All(w => w.Roof == 0 && w.RoofName == "A"), "the one wind's roof in both");
+            Assert.AreEqual("A", LateralSection.WindOf("A (flexible)"));
+            Assert.IsFalse(r.Notes.Any(n => n.Contains("not among the wind calculator's cases")), "both are the calculator's case A");
+            var seg = r.Walls.Single(x => x.Id == s.Id).Segments.Single();
+            Assert.AreEqual(seg.Load.Wind("A (rigid)"), seg.Load.Wind("A (flexible)"), Tol, "the roof's wind the same in both");
+        }
+
         [TestMethod]
         public void WindCases_TheCalculatorsOwn_ShearWallsByName()
         {

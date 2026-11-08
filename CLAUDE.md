@@ -16,7 +16,9 @@
   - `LoadManager.Tests`.
 - **The rules this app stands on:**
   - Loads live only here (the `Loads` section), never in the BuildingModel classes.
-  - The wind is the wind calculator's own `WindCases`, by name, one combination per case, never a range.
+  - The wind is the wind calculator's own `WindCases`, by name, one combination per case, never a range. The shear walls'
+    forces come once for each way they share a wind (`<name> (rigid)`, `<name> (flexible)`, `LateralSection.WindOf`): each
+    is its own wind case here, with that wind's roof pressures (`FoundationAnalysis.WindCasesOf`).
   - On save the app re-reads the file and replaces only `Loads`. Other apps' changes are kept.
   - **The plan's selection is the shared sketch's** (`InitPicking` in `MainWindow.Loads.cs`): walls from the model, the
     zones (`zone:<i>`) and foundation points (`point:<from>`) as its own objects. Several walls: one top load for all;

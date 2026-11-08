@@ -94,7 +94,10 @@ namespace LoadManager
     {
         /// <summary>The wind calculator's case name: "Case 2, from W, roof Case A, +GCpi, torsion +".</summary>
         public string Name { get; set; }
-        /// <summary>The lateral design's case, the same name (null: none saved for it).</summary>
+        /// <summary>
+        /// The lateral design's case: the same wind, one way the shear walls share it ("… (rigid)", "… (flexible)"; then it is
+        /// also <see cref="Name"/>), null: none saved for it.
+        /// </summary>
         public string Lateral { get; set; }
         /// <summary>Where it comes from ("W", "SW", ...; null: not known).</summary>
         public string From { get; set; }
@@ -423,17 +426,19 @@ namespace LoadManager
                                 "by their names (the wind calculator's); every combination with W taken in each one.");
                 return;
             }
-            var latSet = new HashSet<string>(lat);
+            // each wind once for every way the shear walls share it (rigid, flexible: LateralSection.Cases), the same roof
+            // pressures in both, never mixed
             for (int i = 0; i < roof.Count; i++)
-                r.WindCases.Add(new WindCase
-                {
-                    Name = roof[i].Name, Roof = i, RoofName = roof[i].Name, From = roof[i].From,
-                    Lateral = latSet.Contains(roof[i].Name) ? roof[i].Name : null,
-                });
+            {
+                var mine = lat.Where(l => LateralSection.WindOf(l) == roof[i].Name).ToList();
+                if (mine.Count == 0) mine.Add(null);
+                foreach (var l in mine)
+                    r.WindCases.Add(new WindCase { Name = l ?? roof[i].Name, Roof = i, RoofName = roof[i].Name, From = roof[i].From, Lateral = l });
+            }
             var names = new HashSet<string>(roof.Select(x => x.Name));
-            var missing = lat.Where(l => !names.Contains(l)).ToList();
+            var missing = lat.Where(l => !names.Contains(LateralSection.WindOf(l))).ToList();
             r.Notes.Add($"Wind: the wind calculator's {roof.Count} wind cases, each on its own (its roof pressures down the load path" +
-                        (lat.Count > missing.Count ? ", and the shear walls' hold-down forces in the same case, by name" : "") +
+                        (lat.Count > missing.Count ? ", and the shear walls' hold-down forces in the same case, by name, once for each way they share it: the diaphragm rigid and flexible, kept apart" : "") +
                         "); every combination with W taken in each one.");
             if (missing.Count > 0)
                 r.Notes.Add($"Wind: {missing.Count} of the {lat.Count} shear wall cases saved are not among the wind calculator's cases now (e.g. \"{missing[0]}\"), " +
