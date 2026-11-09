@@ -169,8 +169,13 @@ namespace LoadManager.App
             sketch.PreviewMouseRightButtonUp += (s, e) => e.Handled = true;
             sketch.PreviewTextInput += (s, e) => e.Handled = true;
             sketch.PreviewKeyDown += (s, e) => { if (!(e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.None)) e.Handled = true; };
-            sketch.DrawOver += (s, e) => { if (mode == Mode.Loads) DrawLoads(e.Context); else if (mode == Mode.Foundation) DrawFoundation(e.Context); };
-            sketch.ActiveLevelChanged += (s, e) => { if (mode == Mode.Loads) { loadsLevelId = sketch.ActiveLevel?.Id; sketch.ClearSelection(); UpdateLevelBar(); RefreshSide(); } };
+            // the footings' loads on the foundation's own plan only; above it, the level's diaphragm and the hold-downs (its free body when picked)
+            sketch.DrawOver += (s, e) => { if (mode == Mode.Loads) DrawLoads(e.Context); else if (mode == Mode.Foundation && OnFoundationPlan) DrawFoundation(e.Context); };
+            sketch.ActiveLevelChanged += (s, e) =>
+            {
+                if (mode == Mode.Loads) loadsLevelId = sketch.ActiveLevel?.Id;
+                if (mode == Mode.Loads || mode == Mode.Foundation) { sketch.ClearSelection(); UpdateLevelBar(); RefreshSide(); }
+            };
             view3D.Extra = b => fb != null ? FreeBody3D() : Foundation3D();
             view3D.Picked += Picked3D;
             view3D.PickScreen = Pick3DAt;
@@ -409,7 +414,7 @@ namespace LoadManager.App
             tab3D.IsChecked = m == Mode.Foundation3D;
             bool plan = m != Mode.Foundation3D;
             sketch.Visibility = plan ? Visibility.Visible : Visibility.Collapsed;
-            levelBox.Visibility = m == Mode.Loads ? Visibility.Visible : Visibility.Collapsed;
+            levelBox.Visibility = m == Mode.Loads || m == Mode.Foundation ? Visibility.Visible : Visibility.Collapsed;
             diagramBox.Visibility = m == Mode.Foundation ? Visibility.Visible : Visibility.Collapsed;
             view3D.Visibility = plan ? Visibility.Collapsed : Visibility.Visible;
             legend3D.Visibility = fb == null ? view3D.Visibility : Visibility.Collapsed;
@@ -425,6 +430,7 @@ namespace LoadManager.App
                 var ground = B.LevelsBottomUp.FirstOrDefault();
                 if (ground != null) sketch.ShowLevel(ground.Id);
             }
+            UpdateLevelBar(); // the Foundation page's bar has the foundation itself, the Loads page's the levels above
             if (m == Mode.Foundation3D) view3D.Show(B);
             if (plan) Dispatcher.BeginInvoke(new Action(() => sketch.ZoomExtents()), DispatcherPriority.Loaded);
             sketch.Select(selectedWall == null ? null : new[] { selectedWall });
@@ -432,15 +438,23 @@ namespace LoadManager.App
             sketch.Refresh();
         }
 
+        /// <summary>The Foundation page shows the foundation's own plan (the lowest level), not a level above it.</summary>
+        private bool OnFoundationPlan => sketch.ActiveLevel == null || sketch.ActiveLevel.Id == B.LevelsBottomUp.FirstOrDefault()?.Id;
+
         private void UpdateLevelBar()
         {
             levelBar.Children.Clear();
             levelBar.Children.Add(new TextBlock { Text = "Level:", Foreground = Ui.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
             var roof = B.RoofLevel();
-            foreach (var l in B.LevelsBottomUp.Where(l => l.Elevation > 0).OrderByDescending(l => l.Elevation))
+            var lowest = B.LevelsBottomUp.FirstOrDefault();
+            bool fdn = mode == Mode.Foundation;
+            foreach (var l in B.LevelsBottomUp.Where(l => l.Elevation > 0 || (fdn && l == lowest)).OrderByDescending(l => l.Elevation))
             {
                 var id = l.Id;
-                var t = Ui.Toggle("", l.Name + (l == roof ? " (roof)" : ""), $"The loads on {l.Name}'s {(l == roof ? "roof" : "floor")} ({l.Elevation:0.##} ft) and the walls under it", (s, e) => sketch.ShowLevel(id));
+                string tip = fdn
+                    ? (l == lowest ? "The foundation: the footings' loads and the hold-downs on it" : $"{l.Name}'s {(l == roof ? "roof" : "floor")}: click its diaphragm for its free body in the wind, the hold-downs on it")
+                    : $"The loads on {l.Name}'s {(l == roof ? "roof" : "floor")} ({l.Elevation:0.##} ft) and the walls under it";
+                var t = Ui.Toggle("", fdn && l == lowest ? "Foundation" : l.Name + (l == roof ? " (roof)" : ""), tip, (s, e) => sketch.ShowLevel(id));
                 t.IsChecked = sketch.ActiveLevel?.Id == id;
                 levelBar.Children.Add(t);
             }

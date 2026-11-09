@@ -45,7 +45,10 @@
   Upper beam ends and column bases carrying hold-downs: the net force on each support at worst (`UpperUplift`, step 5;
   SWC sizes their connection for the hold-downs alone: conservative, the owner's choice for now). Every diaphragm too
   (step 6): its own wind (`Lateral.Diaphragms`), the walls' shears under it and from above as pairs (`ShearPairs`, in
-  `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`). What carries
+  `BuildingModel.Core`), ΣFx, ΣFy and ΣMz in the rigid cases (`ConnectionBalance.DiaphragmOutOfBalance`). The Foundation page steps up through the levels
+  (the level bar; `OnFoundationPlan`: the footings drawn on the foundation's own plan only); a level's diaphragm clicked shows its
+  free body in the side panel, one case at a time (`DiaphragmPanel`, `ConnectionBalance.DiaphragmForces`), the plan drawing the
+  same case (`SketchCanvas.FreeBodyCase`). What carries
   each pair, in words, comes from the connection details (`WoodFraming.Connections`, `ConnectionsSection.Describer`: the
   file's "Connections", or a fresh design's passed to `FoundationCheck.Run` / `ConnectionBalance.Run`); the details are
   not the model's.

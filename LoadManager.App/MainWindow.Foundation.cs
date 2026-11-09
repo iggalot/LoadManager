@@ -146,16 +146,67 @@ namespace LoadManager.App
             int picked = sketch.Selection.Count;
             if (picked > 1 && selectedPoint == null && selectedWalls.Count != 1)
                 side.Children.Add(Para($"{picked} selected: click one wall or point alone to see its loads and diagram.", true));
+            if (selectedDiaphragm != null) DiaphragmPanel(selectedDiaphragm);
             if (selectedPoint != null) PointPanel(selectedPoint);
             var wall = foundation.Walls.FirstOrDefault(w => w.Id == selectedWall);
             if (wall != null) WallFoundationPanel(wall);
-            if (selectedPoint == null && wall == null) side.Children.Add(Para("Click a wall's footing or a point on the plan: its loads, each combination, and the wall's envelope diagram below the plan.", true));
+            if (selectedPoint == null && wall == null && selectedDiaphragm == null)
+                side.Children.Add(Para(OnFoundationPlan
+                    ? "Click a wall's footing or a point on the plan: its loads, each combination, and the wall's envelope diagram below the plan. A level above (the bar over the plan): click its diaphragm for its free body in the wind."
+                    : "Click the diaphragm (inside the walls) for its free body in the wind: its own wind and each shear wall's push on it, case by case.", true));
 
             side.Children.Add(Head("On the plan"));
             side.Children.Add(Para($"Beside each wall: the most combined line load down (blue) and, opposite, the most up where it lifts (vermilion), to scale: {lineDepthFt:0.#} ft for {maxLine:N0} plf. " +
                                    "Circles: point loads (posts, columns), sized by the load; squares: shear wall ends. Blue: down in every combination; vermilion: lifted in some.", true));
             foreach (var s in foundation.Skipped) side.Children.Add(Para("• " + s, true));
             foreach (var n in foundation.Notes) side.Children.Add(Para("• " + n, true));
+        }
+
+        /// <summary>
+        /// One diaphragm's free body in the wind, in one case at a time (the plan draws it in the same case): its own wind, each
+        /// shear wall's half of a pair on it, ΣFx, ΣFy and ΣMz (<see cref="ConnectionBalance.DiaphragmForces"/>, the check's sums).
+        /// </summary>
+        private void DiaphragmPanel(string levelId)
+        {
+            var lv = B.Level(levelId);
+            side.Children.Add(Head($"{lv?.Name ?? levelId} diaphragm: free body in the wind"));
+            var wind = lateral?.Diaphragms?.FirstOrDefault(d => d.LevelId == levelId);
+            if (wind == null)
+            {
+                side.Children.Add(Para(lateral == null || lateral.IsEmpty
+                    ? "No shear wall design saved: the shear wall app writes each diaphragm's wind into the project when it saves."
+                    : "No wind on this diaphragm in the saved shear wall design (saved before it kept the diaphragms' winds, or none here): save the shear wall design again.", true));
+                return;
+            }
+            var cases = BuildingModel.Model.ShearPairs.Cases(lateral);
+            string c = SketchCanvas.DiaphragmCase(lateral, levelId, sketch.FreeBodyCase);
+            var pick = new ComboBox { Margin = new Thickness(0, 0, 0, 4) };
+            foreach (var x in cases) pick.Items.Add(x);
+            pick.SelectedItem = c;
+            pick.SelectionChanged += (s, e) =>
+            {
+                if (!(pick.SelectedItem is string x) || x == sketch.FreeBodyCase) return;
+                sketch.FreeBodyCase = x;
+                RefreshSide();
+                sketch.Refresh();
+            };
+            side.Children.Add(pick);
+            var pairs = ConnectionBalance.Run(B, lateral).ShearPairs;
+            var forces = ConnectionBalance.DiaphragmForces(wind, pairs, c);
+            var rows = new List<string[]> { new[] { "", "", "Fx (lb)", "Fy (lb)", "Taken by" } };
+            rows.AddRange(forces.Select(f => new[] { f.External ? "E" : "I", f.From, $"{f.Fx:+#,0;-#,0;0}", $"{f.Fy:+#,0;-#,0;0}", f.Connector ?? "" }));
+            side.Children.Add(Mini(rows, new double[] { 16, 70, 0, 0, 0 }));
+            var (fx, fy, mz, scale, mScale) = BuildingModel.Model.ShearPairs.Balance(wind, pairs, c);
+            double fTol = Math.Max(1.0, 0.005 * scale), mTol = Math.Max(10.0, 0.005 * mScale);
+            bool ok = Math.Abs(fx) <= fTol && Math.Abs(fy) <= fTol && !(mz is double m0 && Math.Abs(m0) > mTol);
+            side.Children.Add(Para($"ΣFx = {fx:+#,0;-#,0;0} lb, ΣFy = {fy:+#,0;-#,0;0} lb" +
+                                   (mz is double m ? $", ΣMz = {m:+#,0;-#,0;0} lb·ft about the wind's point (of {mScale:N0})" : " (ΣMz not checked: the flexible case puts the wind at no known point)") +
+                                   (ok ? ": in equilibrium." : ": not in equilibrium."), bold: true));
+            string every = ConnectionBalance.DiaphragmOutOfBalance(wind, pairs);
+            side.Children.Add(Para(every == null ? $"It balances in every one of the {cases.Count} cases." : $"Out of balance: {every}.", true));
+            side.Children.Add(Para("W at strength level, + east and north. E: the level's own wind (at its centre of mass; the torsion in the rigid cases). " +
+                                   "I: where it is cut from the walls: each wall under it pushing back at its top (the boundary nailing), each wall above pushing on it at its sill. " +
+                                   "Each is half of a pair: the wall has the same force the other way. The plan draws this case.", true));
         }
 
         private void PointPanel(FoundationPoint p)

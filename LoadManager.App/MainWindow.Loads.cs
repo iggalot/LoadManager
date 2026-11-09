@@ -19,6 +19,8 @@ namespace LoadManager.App
         private string selectedWall;
         private int selectedZone = -1;
         private FoundationPoint selectedPoint;
+        /// <summary>The level whose diaphragm is picked alone on the Foundation plan (its free body in the wind), else null.</summary>
+        private string selectedDiaphragm;
 
         private bool drawingZone;
         private Point2? zoneFrom;
@@ -46,6 +48,8 @@ namespace LoadManager.App
             selectedPoint = points.Count == 1 && selectedWalls.Count <= 1 ? points[0] : null;
             selectedWall = selectedWalls.Count == 1 ? selectedWalls[0] : selectedPoint?.WallId;
             selectedZone = selectedZones.Count == 1 && selectedWalls.Count == 0 ? selectedZones[0] : -1;
+            var diaphragms = sketch.SelectedOf<Diaphragm>().Select(d => d.LevelId).Distinct().ToList();
+            selectedDiaphragm = diaphragms.Count == 1 && selectedWalls.Count == 0 && selectedPoint == null ? diaphragms[0] : null;
             diagram.Highlight = selectedPoint;
             diagram.Show(foundation?.Walls.FirstOrDefault(w => w.Id == selectedWall), selectedWall == null ? null : DiagramTitle());
             RefreshSide();
@@ -85,13 +89,14 @@ namespace LoadManager.App
         {
             sketch.GeometryLocked = true; // the plan is for looking and picking: no grips, nothing moved
             sketch.GeometryLockedMessage = "The building is edited in the Building Model.";
-            sketch.PickFilter = o => o is Wall;
+            sketch.PickFilter = o => o is Wall || (mode == Mode.Foundation && o is Diaphragm); // a diaphragm: its free body in the wind
             sketch.HostPickFirst = true; // a foundation point stands on its wall: the point first
             sketch.HostOwns = id => ZoneIndex(id) is int zi && zi >= 0 ? mode == Mode.Loads && zi < (LoadSection.Read(B).Zones?.Count ?? 0) : mode == Mode.Foundation && PointOf(id) != null;
             sketch.HostPick = (at, tol) =>
             {
                 if (mode == Mode.Foundation)
                 {
+                    if (!OnFoundationPlan) return null; // a level above: its diaphragm and walls, not the foundation's points
                     var p = foundation?.AllPoints.Select(x => (x, d: Dist(x.Where, at))).Where(t => t.d <= 1.5 * tol).OrderBy(t => t.d).FirstOrDefault().x;
                     return p == null ? null : PointId(p);
                 }
@@ -107,7 +112,7 @@ namespace LoadManager.App
             sketch.HostInWindow = box =>
             {
                 if (mode == Mode.Foundation)
-                    return (foundation?.AllPoints ?? Enumerable.Empty<FoundationPoint>()).Where(p => box.Contains(p.Where.X, p.Where.Y)).Select(PointId).ToList();
+                    return !OnFoundationPlan ? new List<string>() : (foundation?.AllPoints ?? Enumerable.Empty<FoundationPoint>()).Where(p => box.Contains(p.Where.X, p.Where.Y)).Select(PointId).ToList();
                 var lv = sketch.ActiveLevel;
                 return (LoadSection.Read(B).Zones ?? new List<LoadZone>()).Select((z, i) => (z, i))
                     .Where(t => lv != null && t.z.LevelId == lv.Id && t.z.IsValid && box.Contains(t.z.X0, t.z.Y0) && box.Contains(t.z.X1, t.z.Y1)).Select(t => ZoneId(t.i)).ToList();

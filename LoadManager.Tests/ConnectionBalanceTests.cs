@@ -42,6 +42,31 @@ namespace LoadManager.Tests
             return (b, lat, w1, w2);
         }
 
+        /// <summary>
+        /// Level 2's diaphragm in case C: its own wind 1000 lb east; W1's top pushes it back 2000 lb (the other half of W1's
+        /// 2000 lb on its top), W2's sill pushes it 1000 lb east (W2's 1000 lb going down): 1000 − 2000 + 1000 = 0.
+        /// </summary>
+        [TestMethod]
+        public void TheDiaphragm_ItsWindAndTheWallsHalves_Balance_ByHand()
+        {
+            var (b, lat, w1, w2) = TwoStories();
+            var l2 = b.Levels.Single(l => l.Name == "Level 2");
+            lat.Diaphragms.Add(new DiaphragmWind { LevelId = l2.Id, X = 10.1875, Y = 0, Fx = new Dictionary<string, double> { ["C"] = 1000 }, Fy = new Dictionary<string, double> { ["C"] = 0 } });
+            var r = ConnectionBalance.Run(b, lat);
+            CollectionAssert.Contains(r.DiaphragmsBalanced, l2.Id);
+            var f = ConnectionBalance.DiaphragmForces(lat.Diaphragms[0], r.ShearPairs, "C");
+            Assert.AreEqual(3, f.Count);
+            Assert.IsTrue(f[0].External);
+            Assert.AreEqual(1000, f[0].Fx, 1e-9);
+            Assert.AreEqual(-2000, f.Single(x => x.From == $"{w1.Id} top").Fx, 1e-9, "the wall under it pushes back");
+            Assert.AreEqual(1000, f.Single(x => x.From == $"{w2.Id} sill").Fx, 1e-9, "the wall above pushes on it");
+            Assert.AreEqual(0, f.Sum(x => x.Fx), 1e-9);
+            Assert.AreEqual(0, ShearPairs.Balance(lat.Diaphragms[0], r.ShearPairs, "C").fx, 1e-9, "the same sum as the check's");
+
+            lat.Diaphragms[0].Fx["C"] = 1500;
+            StringAssert.Contains(ConnectionBalance.Run(b, lat).Problems.Single().Message, "ΣFx = +500 lb in C");
+        }
+
         [TestMethod]
         public void TwoStories_EachWallBalances_ByHand()
         {

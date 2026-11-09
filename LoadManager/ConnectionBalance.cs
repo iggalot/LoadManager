@@ -115,5 +115,36 @@ namespace LoadManager
             }
             return null;
         }
+
+        /// <summary>
+        /// One diaphragm's free body in one wind case, force by force, for the side panel: its own wind (at its point), then
+        /// each wall's half of a pair on it (the walls under it at their tops, those above at their sills), each with what takes
+        /// it; the sums are <see cref="BuildingModel.Model.ShearPairs.Balance"/>'s (lb, lb·ft, W at strength level).
+        /// </summary>
+        public static List<DiaphragmForce> DiaphragmForces(DiaphragmWind d, IEnumerable<ShearPair> pairs, string windCase)
+        {
+            var list = new List<DiaphragmForce>();
+            if (d == null) return list;
+            list.Add(new DiaphragmForce { From = "the wind on it", Connector = d.MzOf(windCase) is double m ? $"at ({d.X:0.##}, {d.Y:0.##}) ft, Mz {m:+#,0;-#,0;0} lb·ft" : $"at ({d.X:0.##}, {d.Y:0.##}) ft",
+                                          Fx = d.FxOf(windCase), Fy = d.FyOf(windCase), External = true });
+            foreach (var p in (pairs ?? Enumerable.Empty<ShearPair>()).Where(p => p.LevelId == d.LevelId && !p.OnFoundation).OrderBy(p => p.WallId).ThenBy(p => p.AtTop))
+            {
+                double f = p.OnOtherIn(windCase);
+                list.Add(new DiaphragmForce { From = p.From, WallId = p.WallId, Connector = p.Connector, Fx = f * p.Dir.X, Fy = f * p.Dir.Y });
+            }
+            return list;
+        }
+    }
+
+    /// <summary>One force on a diaphragm's free body (<see cref="ConnectionBalance.DiaphragmForces"/>): lb, + east and north.</summary>
+    public sealed class DiaphragmForce
+    {
+        public string From { get; set; }
+        public string WallId { get; set; }
+        public string Connector { get; set; }
+        public double Fx { get; set; }
+        public double Fy { get; set; }
+        /// <summary>The wind (E); else a wall's half of a pair (I: the diaphragm is cut from the wall there).</summary>
+        public bool External { get; set; }
     }
 }
