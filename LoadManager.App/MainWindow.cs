@@ -212,6 +212,24 @@ namespace LoadManager.App
             if (file != null) Open(file);
         }
 
+        /// <summary>
+        /// The page to show (the hub's <c>--page</c>, its step's): "loads", "foundation" or "foundation3d"; anything else is
+        /// left as it is (logged).
+        /// </summary>
+        /// <summary>A project is open (the lock taken, the file read).</summary>
+        public bool HasProject => !string.IsNullOrEmpty(path);
+
+        public void ShowPage(string page)
+        {
+            switch ((page ?? "").Trim().ToLowerInvariant())
+            {
+                case "loads": SetMode(Mode.Loads); break;
+                case "foundation": SetMode(Mode.Foundation); break;
+                case "foundation3d": SetMode(Mode.Foundation3D); break;
+                default: Log.Warning("App", "No such page: " + page + " (loads, foundation or foundation3d)", null); break;
+            }
+        }
+
         public void Open(string file)
         {
             // one Load Manager per project (the same project again keeps this app's own lock)

@@ -27,7 +27,10 @@ namespace LoadManager.App
             if (args.Length > 0)
             {
                 Log.Info("App", "Started with " + args[0]);
-                if (File.Exists(args[0])) w.Loaded += (s, e) => w.Open(args[0]);
+                // the hub's "--page foundation": the step's page, once the project is open
+                int at = Array.FindIndex(args, a => string.Equals(a, "--page", StringComparison.OrdinalIgnoreCase));
+                string page = at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
+                if (File.Exists(args[0])) w.Loaded += (s, e) => { w.Open(args[0]); if (page != null && w.HasProject) w.ShowPage(page); };
                 else Log.Warning("App", "The file to open does not exist: " + args[0], null);
             }
             return app.Run(w);

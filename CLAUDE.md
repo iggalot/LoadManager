@@ -52,6 +52,7 @@
   each pair, in words, comes from the connection details (`WoodFraming.Connections`, `ConnectionsSection.Describer`: the
   file's "Connections", or a fresh design's passed to `FoundationCheck.Run` / `ConnectionBalance.Run`); the details are
   not the model's.
+- **Start page:** `--page loads|foundation|foundation3d` after the project's path (the hub's steps), `ShowPage`.
 - **Roof ties** (`WindUplift`, `RoofTie`; owner): the C&C uplift where it is higher than the MWFRS uplift at the same wall
   or beam, else the MWFRS (`Governs`); place by place along it too (`Along`, `RoofTieStep`: cut where any of them changes).
 - **Build:** `MSBuild LoadManager.sln -restore`.
