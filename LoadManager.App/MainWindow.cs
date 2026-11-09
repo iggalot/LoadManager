@@ -255,6 +255,13 @@ namespace LoadManager.App
                 sketch.ZoomExtents();
                 Log.Info("Project", "Opened " + file);
                 Say($"Opened {Path.GetFileName(file)} (revision {doc.Revision}).");
+                // what the hub marked for this app's steps when it last checked (its "Hub.Status": the hub writes it, this app only reads)
+                string hub = ProjectStatus.Read(d.Building)?.Words("Gravity loads", "Foundation loads");
+                if (hub != null)
+                {
+                    Log.Warning("Project", hub.Replace("\n", " "), null);
+                    Dispatcher.BeginInvoke(new Action(() => MessageBox.Show(this, hub, "Open", MessageBoxButton.OK, MessageBoxImage.Warning)), DispatcherPriority.ApplicationIdle);
+                }
             }
             catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is InvalidDataException || ex is System.Runtime.Serialization.SerializationException || ex is ArgumentException)
             {
