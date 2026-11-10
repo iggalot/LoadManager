@@ -20,8 +20,10 @@ namespace LoadManager
     /// <summary>The Load Manager's foundation work on a project as it is now (<see cref="FoundationCheck.Run"/>).</summary>
     public sealed class FoundationCheckResult
     {
-        /// <summary>Why the foundation is not checked (no gravity loads yet), or null.</summary>
+        /// <summary>Why the foundation is not checked (no gravity loads yet, the model has errors), or null.</summary>
         public string NotChecked { get; set; }
+        /// <summary>The building model's errors: with any, nothing is checked (each names its members and level, to show them).</summary>
+        public List<BuildingModel.Checks.ModelIssue> ModelErrors { get; } = new List<BuildingModel.Checks.ModelIssue>();
         /// <summary>The wind it took (the wind calculator's, <see cref="WindCheck"/>).</summary>
         public WindCheckResult Wind { get; set; }
         /// <summary>Why there is no roof wind (no wind set up, it cannot be calculated), or null.</summary>
@@ -95,6 +97,12 @@ namespace LoadManager
         {
             var r = new FoundationCheckResult();
             if (b == null) { r.NotChecked = "no project"; return r; }
+            r.ModelErrors.AddRange(GravityLoadPath.ModelErrorsOf(b));
+            if (r.ModelErrors.Count > 0)
+            {
+                r.NotChecked = $"the building model has {r.ModelErrors.Count} error{(r.ModelErrors.Count == 1 ? "" : "s")}, so nothing is calculated: {r.ModelErrors[0].Message}";
+                return r;
+            }
             var s = LoadSection.Read(b);
             if (s == null || s.IsEmpty) { r.NotChecked = "no gravity loads entered"; return r; }
             r.Wind = wind ?? WindCheck.Run(b);

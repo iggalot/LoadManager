@@ -152,8 +152,9 @@ namespace LoadManager.Tests
         }
 
         /// <summary>
-        /// Two beams meeting end to end at (15, 10) with nothing under them: each rests on the other, a mechanism. It is said
-        /// so, those ends are left untraced, and the solve stops.
+        /// Two beams meeting end to end at (15, 10) with nothing under them: each rests on the other, a mechanism. The model
+        /// is not valid (owner 2026-11-10): it is the model's error, naming both beams and their level, and nothing is
+        /// calculated at all (not the rest of the building either).
         /// </summary>
         [TestMethod]
         public void TwoBeamsOnEachOthersEnds_WithNothingUnder_AMechanism()
@@ -163,10 +164,12 @@ namespace LoadManager.Tests
             var c = b.AddBeam(l2, 15, 10, 30, 10);
             b.AddWall(l2, roof, 0, 10, 30, 10);
             var r = GravityLoadPath.Run(b, new LoadSection { WallDead = 10 });
-            Assert.IsNull(r.Beams[a.Id].EndOn);
-            Assert.IsNull(r.Beams[c.Id].StartOn);
-            Assert.IsTrue(r.Notes.Any(n => n.Contains("mechanism")), string.Join(" | ", r.Notes));
-            Assert.IsTrue(r.Beams[a.Id].Notes.Any(n => n.Contains("not traced down")));
+            Assert.IsFalse(r.Calculated);
+            var e = r.ModelErrors.Single(i => i.Code == "BeamNotHeldUp");
+            CollectionAssert.AreEquivalent(new[] { a.Id, c.Id }, e.Ids);
+            Assert.AreEqual(l2.Id, e.LevelId);
+            Assert.AreEqual(0, r.Beams.Count + r.Count + r.Foundation.Count, "nothing calculated anywhere");
+            Assert.IsTrue(r.Notes.Any(n => n.Contains("nothing is calculated")), string.Join(" | ", r.Notes));
         }
 
         /// <summary>

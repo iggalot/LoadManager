@@ -401,6 +401,8 @@ namespace LoadManager.Tests
             var s1 = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
             b.AddWall(b.Ground, l2, 0, 20, 30, 20);
             b.AddBeam(l2, 0, 10, 30, 10);
+            b.AddColumn(b.Ground, l2, 0, 10);   // the beam on posts (a beam on nothing is a model error)
+            b.AddColumn(b.Ground, l2, 30, 10);
             var s2 = b.AddWall(l2, rf, 0, 0, 30, 0);
             b.AddWall(l2, rf, 0, 20, 30, 20);
             LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });

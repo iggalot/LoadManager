@@ -218,8 +218,31 @@ namespace LoadManager.App
                 side.Children.Add(Para("File > Open: a project's building model (.bldg.json). The loads are saved in the same file, beside the building, for every app to read.", true));
                 return;
             }
+            ModelErrorsSide();
             if (mode == Mode.Loads) LoadsSide(); else FoundationSide();
             SideReadOnly();
+        }
+
+        /// <summary>
+        /// The building model's errors (owner 2026-11-10): with any, nothing is calculated here (the load path, the foundation,
+        /// the free bodies all refuse a model that is not valid). A red bar over the plan says so, the errors are marked on the
+        /// plan, and each in the list, clicked, goes to its level and selects its members (a beam that cannot stand, ...).
+        /// </summary>
+        private void ModelErrorsSide()
+        {
+            var errors = GravityLoadPath.ModelErrorsOf(B);
+            sketch.Issues = errors;
+            sketch.ShowIssues = errors.Count > 0;
+            modelErrorBanner.Visibility = errors.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (errors.Count == 0) return;
+            ((TextBlock)modelErrorBanner.Child).Text =
+                $"The building model has {errors.Count} error{(errors.Count == 1 ? "" : "s")}: nothing is calculated (no loads, no foundation) until " +
+                $"{(errors.Count == 1 ? "it is" : "they are")} fixed in the Building Model (Model > Edit building). Click an error in the side panel to see it on the plan.";
+            side.Children.Add(Para("The building model is not valid", bold: true));
+            var list = new IssueList(sketch) { Margin = new Thickness(0, 0, 0, 12) };
+            list.Show(errors);
+            list.Picked += (s, i) => { UpdateLevelBar(); Say($"Shown on the plan: {string.Join(", ", i.Ids)} ({B.Level(i.LevelId)?.Name})."); };
+            side.Children.Add(list);
         }
 
         private void LoadsSide()

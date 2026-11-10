@@ -11,7 +11,7 @@
       partway along, else a beam whose end is there (`SupportsOf`, `BeamLoad.Supports`, each named "start", "end" or
       "at 12.5 ft"). Its reactions are its free body's (`BuildingModel.Statics.BeamStatics`, owner 2026-11-10): two
       supports by statics, an end past them a cantilever (a back support pulled up is said so); three or more a continuous
-      beam, EI the same along it; fewer than two it cannot stand, said so and not traced. Beams are solved carried-before-carrier; beams bearing on each other round a loop (reciprocal
+      beam, EI the same along it; a beam that cannot stand (fewer than two supports, or beams propping each other up over nothing) is the model's error `BeamNotHeldUp` (`BuildingModel.Statics.BeamSupports`, `ModelChecks`), and with any model error nothing is calculated (`Result.ModelErrors`, `FoundationCheck.NotChecked`; the window's red bar and its list, each error shown on its level when clicked; owner 2026-11-10). Beams are solved carried-before-carrier; beams bearing on each other round a loop (reciprocal
       framing) are solved together, going round until nothing changes (`SolveBeams`); a loop resting only on each
       other's ends is a mechanism, said so and not traced. A beam running along the joists or rafters carries half a
       spacing each side (`ModelDefaults.FloorJoistSpacing`, `RafterSpacing`), taken from the lines across the framing,

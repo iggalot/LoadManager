@@ -4,6 +4,7 @@ using System.Linq;
 using BuildingModel.Geometry;
 using BuildingModel.Model;
 using BuildingModel.Statics;
+using BuildingModel.Checks;
 
 namespace LoadManager
 {
@@ -223,7 +224,17 @@ namespace LoadManager
             /// <summary>What reaches the foundation: the walls on the ground and the columns standing on it.</summary>
             public List<FoundationLoad> Foundation { get; } = new List<FoundationLoad>();
             public List<string> Notes { get; } = new List<string>();
+            /// <summary>
+            /// The building model's errors (<see cref="ModelChecks"/>): when there are any, nothing is calculated (owner: no loads
+            /// without a valid model; a beam that cannot stand is not left out, the whole model is refused).
+            /// </summary>
+            public List<ModelIssue> ModelErrors { get; } = new List<ModelIssue>();
+            public bool Calculated => ModelErrors.Count == 0;
         }
+
+        /// <summary>The model's errors: what stops every calculation here.</summary>
+        public static List<ModelIssue> ModelErrorsOf(Building b) =>
+            b == null ? new List<ModelIssue>() : ModelChecks.Run(b).Where(i => i.Severity == Severity.Error).ToList();
 
         /// <summary>A bearing line on a level: a wall under it or a beam on it.</summary>
         private sealed class Line
@@ -278,6 +289,13 @@ namespace LoadManager
         {
             var result = new Result();
             if (b == null) return result;
+            result.ModelErrors.AddRange(ModelErrorsOf(b));
+            if (result.ModelErrors.Count > 0)
+            {
+                result.Notes.Add($"The building model has {result.ModelErrors.Count} error{(result.ModelErrors.Count == 1 ? "" : "s")}: nothing is calculated until " +
+                                 $"{(result.ModelErrors.Count == 1 ? "it is" : "they are")} fixed in the Building Model. {result.ModelErrors[0].Message}");
+                return result;
+            }
             s = s ?? new LoadSection();
             // the most along a line: each kind's largest, or in the uplift pass the place with the most net uplift
             LineLoad Most(LineLoad x, LineLoad y) => wind == null ? LineLoad.Max(x, y) : LineLoad.MoreUplift(x, y);
@@ -343,11 +361,8 @@ namespace LoadManager
                 // (b) the beams. What holds each up (SupportsOf: walls and columns anywhere along it, a beam at an end) decides
                 // the order: a beam framing into a girder is solved before the girder, and its reaction is a point load on it.
                 // Beams that bear on each other round a loop (reciprocal framing) are solved together (SolveBeams).
-                var supports = beams.ToDictionary(m => m.Id, m => SupportsOf(m, bearing, columns, BeamAt));
+                var supports = beams.ToDictionary(m => m.Id, m => SupportsOf(m, bearing, columns, beams));
                 var ends = supports.ToDictionary(k => k.Key, k => k.Value.Select(x => x.On).Where(x => x != null).ToList());
-                string BeamAt(Point2 at, string exceptBeam) =>
-                    beams.FirstOrDefault(x => x.Id != exceptBeam && DistanceToSegment(at, x.Start, x.End) <= Bearing && Dist(at, x.Start) > Bearing && Dist(at, x.End) > Bearing)?.Id
-                    ?? beams.FirstOrDefault(x => x.Id != exceptBeam && (Dist(at, x.Start) <= Bearing || Dist(at, x.End) <= Bearing))?.Id;
                 var order = new List<Beam>();
                 var left = beams.ToList();
                 while (left.Count > 0)
@@ -539,58 +554,11 @@ namespace LoadManager
         /// <summary>"BM1 via W7": a load brought down through a wall (the first wall it came through is kept).</summary>
         private static string Via(string from, string wall) => from.Contains(" via ") ? from : $"{from} via {wall}";
         /// <summary>
-        /// What holds a beam up, in order along it: every bearing wall under it (crossing it, ending under it, or under one of
-        /// its ends; a wall along it, the ends of where they overlap), every column under it, and at an end with neither, a
-        /// beam (<paramref name="beamAt"/>: one it lands on partway along, else one whose end is there). Two within
-        /// <see cref="Bearing"/> of each other are one (a wall before a column); one within it of an end is that end.
+        /// What holds a beam up, in order along it: the building model's rule (<see cref="BeamSupports.Of(Beam, IList{Wall}, IList{Column}, IList{Beam})"/>,
+        /// one for every app): every bearing wall and column under it anywhere along it, and at an end with neither, a beam.
         /// </summary>
-        private static List<BeamSupport> SupportsOf(Beam m, List<Wall> bearing, List<Column> columns, Func<Point2, string, string> beamAt)
-        {
-            double L = Dist(m.Start, m.End);
-            Point2 At(double t) => L < 1e-9 ? m.Start : new Point2(m.Start.X + (m.End.X - m.Start.X) * t / L, m.Start.Y + (m.End.Y - m.Start.Y) * t / L);
-            double AlongM(Point2 p) => L < 1e-9 ? 0 : Math.Max(0, Math.Min(L, ((p.X - m.Start.X) * (m.End.X - m.Start.X) + (p.Y - m.Start.Y) * (m.End.Y - m.Start.Y)) / L));
-            double Off(Point2 p) => DistanceToSegment(p, m.Start, m.End);
-            var found = new List<(double at, string on, int rank)>();
-            foreach (var w in bearing)
-            {
-                if (DistanceToSegment(m.Start, w.Start, w.End) <= Bearing) found.Add((0, w.Id, 0));
-                if (DistanceToSegment(m.End, w.Start, w.End) <= Bearing) found.Add((L, w.Id, 0));
-                foreach (var p in new[] { w.Start, w.End }) if (Off(p) <= Bearing) found.Add((AlongM(p), w.Id, 0));
-                if (Crossing(m.Start, m.End, w.Start, w.End, out var t)) found.Add((t * L, w.Id, 0));
-            }
-            foreach (var c in columns) if (Off(c.At) <= Bearing) found.Add((AlongM(c.At), c.Id, 1));
-            // one each place: the ends first, then along it
-            var list = new List<BeamSupport>();
-            var taken = new List<(double at, string on, int rank)>();
-            foreach (var f in found.Select(f => (at: f.at <= Bearing ? 0 : f.at >= L - Bearing ? L : f.at, f.on, f.rank)).OrderBy(f => f.at).ThenBy(f => f.rank))
-            {
-                if (taken.Any(x => Math.Abs(x.at - f.at) <= Bearing)) continue;
-                taken.Add(f);
-            }
-            foreach (var (at, on, _) in taken) list.Add(new BeamSupport { At = at, On = on });
-            // an end with no wall or column under it: a beam there
-            if (!list.Any(x => x.At <= Bearing)) { var on = beamAt(m.Start, m.Id); if (on != null) list.Insert(0, new BeamSupport { At = 0, On = on }); }
-            if (!list.Any(x => x.At >= L - Bearing)) { var on = beamAt(m.End, m.Id); if (on != null) list.Add(new BeamSupport { At = L, On = on }); }
-            foreach (var x in list)
-            {
-                x.Name = x.At <= Bearing ? "start" : x.At >= L - Bearing ? "end" : $"at {x.At:0.##} ft";
-                x.Where = x.Name == "start" ? m.Start : x.Name == "end" ? m.End : At(x.At);
-            }
-            return list;
-        }
-
-        /// <summary>Where two segments cross, as a share of the first (0 to 1); false when they do not, or run alongside.</summary>
-        private static bool Crossing(Point2 a, Point2 b, Point2 c, Point2 d, out double t)
-        {
-            t = 0;
-            double rx = b.X - a.X, ry = b.Y - a.Y, sx = d.X - c.X, sy = d.Y - c.Y;
-            double den = rx * sy - ry * sx;
-            if (Math.Abs(den) < 1e-12) return false;
-            double qx = c.X - a.X, qy = c.Y - a.Y;
-            t = (qx * sy - qy * sx) / den;
-            double u = (qx * ry - qy * rx) / den;
-            return t >= -1e-9 && t <= 1 + 1e-9 && u >= -1e-9 && u <= 1 + 1e-9;
-        }
+        private static List<BeamSupport> SupportsOf(Beam m, List<Wall> bearing, List<Column> columns, List<Beam> beams) =>
+            BeamSupports.Of(m, bearing, columns, beams).Select(x => new BeamSupport { Name = x.Name, At = x.At, Where = x.Where, On = x.On }).ToList();
 
         private static bool IsNil(PointLoad p) =>
             Math.Abs(p.Dead) < 1e-9 && Math.Abs(p.Live) < 1e-9 && Math.Abs(p.RoofLive) < 1e-9 && Math.Abs(p.Snow) < 1e-9 && Math.Abs(p.Wind) < 1e-9;

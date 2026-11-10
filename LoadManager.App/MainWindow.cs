@@ -152,10 +152,12 @@ namespace LoadManager.App
             var root = new DockPanel();
             DockPanel.SetDock(appBar, Dock.Top);
             DockPanel.SetDock(viewOnlyBanner, Dock.Top);
+            DockPanel.SetDock(modelErrorBanner, Dock.Top);
             DockPanel.SetDock(statusBar, Dock.Bottom);
             DockPanel.SetDock(sideBorder, Dock.Right);
             root.Children.Add(appBar);
             root.Children.Add(viewOnlyBanner);
+            root.Children.Add(modelErrorBanner);
             root.Children.Add(statusBar);
             root.Children.Add(sideBorder);
             root.Children.Add(center);
@@ -384,6 +386,13 @@ namespace LoadManager.App
                 Text = "View only: someone else is working on this project. You can look at the loads and the foundation; nothing can be changed or saved here. Their saves show here as they make them. Open it again once they have closed it.",
                 Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap,
             },
+        };
+
+        /// <summary>The building model has errors: nothing is calculated (its text set by ModelErrorsSide).</summary>
+        private readonly Border modelErrorBanner = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0xC6, 0x28, 0x28)), Padding = new Thickness(10, 5, 10, 5), Visibility = Visibility.Collapsed,
+            Child = new TextBlock { Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, FontWeight = FontWeights.SemiBold },
         };
 
         private void SetViewOnly(bool on)
