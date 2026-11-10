@@ -129,6 +129,39 @@ namespace LoadManager.Tests
             Assert.IsFalse(r.Pairs[2].Supported);
         }
 
+        /// <summary>
+        /// W2's east hold-down lands on a post, C1, put at the hold-down (x = 20.125); the wall's east end presses at its end post's
+        /// centreline, 0.125 ft further east (20.25), inside the same post. In C it presses 500 lb on C1 and C1's base 500 lb on
+        /// the foundation. A column is a post: both act on its axis, so C1 balances (before, 500 × 0.125 = 62.5 lb·ft did not).
+        /// W2's own free body still has its end pressing at its post's centreline.
+        /// </summary>
+        [TestMethod]
+        public void AWallEndPressingOnAColumn_ActsOnItsAxis_TheColumnBalances()
+        {
+            var (b, lat, _, w2) = TwoStories();
+            var l2 = b.Levels.Single(l => l.Name == "Level 2");
+            var c1 = b.AddColumn(b.Ground, l2, 20.125, 0);
+            lat.Holdowns[3].Onto = $"column {c1.Id}";   // W2's east end: on the post, not W1
+            lat.Holdowns.Add(new StoryHoldown
+            {
+                From = $"column {c1.Id} base", X = 20.125, Y = 0, OntoLevelId = b.Ground.Id, Onto = "the foundation", Kind = "column base",
+                Connector = "HDU2", Up = new Dictionary<string, double> { ["C"] = -500 },
+            });
+            lat.Holdowns[1].Up["C"] = -1000;  // W1's east end: W2's 500 now goes down C1, not W1
+            var r = ConnectionBalance.Run(b, lat);
+
+            var col = r.Bodies.Single(x => x.Id == c1.Id);
+            var fromAbove = col.Connections.Single(c => !c.Own);
+            Assert.AreEqual(-500, fromAbove.On("C"), 1e-9, "W2's end presses down on it");
+            Assert.AreEqual(20.125, fromAbove.WhereIn("C").X, 1e-9, "on the column's axis, not the wall's post centreline");
+            Assert.AreEqual(0, col.WindMomentImbalance("C"), 1e-9);
+            Assert.IsFalse(r.Problems.Any(p => p.Id == c1.Id), string.Join("\n", r.Problems.Select(p => p.Message)));
+
+            var upper = r.Bodies.Single(x => x.Id == w2.Id);
+            Assert.AreEqual(20.25, upper.Connections.Single(c => c.Pair.From.EndsWith("east end")).WhereIn("C").X, 1e-9, "the wall's own: its post's centreline");
+            Assert.AreEqual(0, upper.WindMomentImbalance("C"), 1e-6);
+        }
+
         [TestMethod]
         public void SavedBeforeTheCases_NothingToCheck()
         {

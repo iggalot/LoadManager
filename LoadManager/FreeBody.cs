@@ -91,8 +91,15 @@ namespace LoadManager
         /// <summary>Where along its member it acts in one wind case (ft from its start).</summary>
         public double AlongIn(string windCase) => Pair.Of(windCase) < 0 ? ACompression : A;
 
-        /// <summary>Where on plan it acts in one wind case.</summary>
-        public Point2 WhereIn(string windCase) => Pair.WhereIn(windCase);
+        /// <summary>
+        /// On a column: its axis. A column is a post: what bears on it or hangs from it acts along it, as its gravity loads do
+        /// (<see cref="FreeBody"/>'s point loads at its start). A wall's end pressing on it does so at the wall's end post, a
+        /// hold-down's rod or strap a post in: both within the column's section, so on its axis. Null: on any other member.
+        /// </summary>
+        public Point2? Axis { get; set; }
+
+        /// <summary>Where on plan it acts in one wind case: on a column, its axis (<see cref="Axis"/>).</summary>
+        public Point2 WhereIn(string windCase) => Axis ?? Pair.WhereIn(windCase);
     }
 
     /// <summary>
@@ -526,6 +533,7 @@ namespace LoadManager
                     Part = own && !p.Internal ? FreeBodyPart.Support : FreeBodyPart.Internal,
                     What = own ? $"{p.From}: {p.Connector ?? "no connector"} to {to}" : $"{p.From} ({p.Connector ?? "no connector"}), from {p.UpperKind} {p.Upper} above",
                     Z = Elev(b, p.LevelId), A = Along(p.Where), ACompression = Along(comp),
+                    Axis = fb.Kind == "column" ? fb.Start : (Point2?)null,
                 });
             }
             if (fb.Kind != "wall" || fb.Length <= 1e-9) return;
