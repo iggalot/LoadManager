@@ -97,14 +97,14 @@ namespace LoadManager.Wpf
                 var beams = path.Beams.Values.OrderBy(m => m.BeamId, order).ToList();
                 if (beams.Count > 0)
                 {
-                    root.Children.Add(FoundationLoadsWindow.Head($"Beam ends ({beams.Count} beams)"));
-                    root.Children.Add(FoundationLoadsWindow.Table(new[] { "Beam", "Level", "Start: 0.6D + 0.6W (lb)", "End: 0.6D + 0.6W (lb)", "Governing case" },
-                        beams.Select(m =>
+                    // one row a support: its ends, and partway along (a continuous beam, a cantilever's back span)
+                    root.Children.Add(FoundationLoadsWindow.Head($"Beam supports ({beams.Count} beams)"));
+                    root.Children.Add(FoundationLoadsWindow.Table(new[] { "Beam", "Level", "Support", "On", "0.6D + 0.6W (lb)", "Governing case" },
+                        beams.SelectMany(m => m.Supports.Select(x =>
                         {
-                            var s = u.BeamEnd(m.BeamId, true); var e = u.BeamEnd(m.BeamId, false);
-                            var worse = s == null ? e : e == null ? s : e.Net < s.Net ? e : s;
-                            return new[] { m.BeamId, Lvl(m.LevelId), $"{Net(s?.Net ?? 0)} on {m.StartOn ?? "nothing drawn"}", $"{Net(e?.Net ?? 0)} on {m.EndOn ?? "nothing drawn"}", CaseOf(worse) };
-                        }), "Uplift beams"));
+                            var g = u.BeamSupport(m.BeamId, x.Name);
+                            return new[] { m.BeamId, Lvl(m.LevelId), x.Name, x.On ?? "nothing drawn", Net(g?.Net ?? 0), CaseOf(g) };
+                        })), "Uplift beams"));
                 }
 
                 // ---- columns

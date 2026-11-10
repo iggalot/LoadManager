@@ -6,9 +6,12 @@
 - **Projects:**
   - `LoadManager`, the engine (no UI):
     - `LoadSection`: the `Loads` section of the project file: level loads, zones, wall tops, the walls' dead load.
-    - `GravityLoadPath`. What carries what is found from the geometry, level by level from the roof down: a beam end
-      bears on a wall, else a column, else a beam it lands on partway along, else a beam whose end is there
-      (`SupportOf`). Beams are solved carried-before-carrier; beams bearing on each other round a loop (reciprocal
+    - `GravityLoadPath`. What carries what is found from the geometry, level by level from the roof down: a beam is
+      held up by every wall and column under it anywhere along it, and at an end with neither, by a beam it lands on
+      partway along, else a beam whose end is there (`SupportsOf`, `BeamLoad.Supports`, each named "start", "end" or
+      "at 12.5 ft"). Its reactions are its free body's (`BuildingModel.Statics.BeamStatics`, owner 2026-11-10): two
+      supports by statics, an end past them a cantilever (a back support pulled up is said so); three or more a continuous
+      beam, EI the same along it; fewer than two it cannot stand, said so and not traced. Beams are solved carried-before-carrier; beams bearing on each other round a loop (reciprocal
       framing) are solved together, going round until nothing changes (`SolveBeams`); a loop resting only on each
       other's ends is a mechanism, said so and not traced. A beam running along the joists or rafters carries half a
       spacing each side (`ModelDefaults.FloorJoistSpacing`, `RafterSpacing`), taken from the lines across the framing,

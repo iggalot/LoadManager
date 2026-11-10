@@ -730,11 +730,13 @@ namespace LoadManager
             foreach (var p in r.Points)
                 fb.Forces.Add(new FreeBodyForce { Part = p.Source == null ? FreeBodyPart.External : FreeBodyPart.Internal, What = p.From, Member = fb.Id, Other = p.Source, Z = z, A = p.At, B = p.At, Load = ServiceLoad.Of(p.Load) });
             fb.Notes.Add("The beam's own weight is not in the loads (beams are not sized yet): W is 0.");
-            foreach (var (on, at, R, which) in new[] { (r.StartOn, 0.0, r.StartReaction, "Start"), (r.EndOn, r.Span, r.EndReaction, "End") })
+            // each support where it is (its ends, or partway along: a cantilever's tip has none)
+            foreach (var x in r.Supports)
                 fb.Forces.Add(new FreeBodyForce
                 {
-                    Part = on == null ? FreeBodyPart.Support : FreeBodyPart.Internal, What = $"{which}, on {on ?? "nothing drawn"}",
-                    Member = fb.Id, Other = on, Z = z, A = at, B = at, Load = ServiceLoad.Of(R), Up = true,
+                    Part = x.On == null ? FreeBodyPart.Support : FreeBodyPart.Internal,
+                    What = $"{char.ToUpper(x.Name[0])}{x.Name.Substring(1)}, on {x.On ?? "nothing drawn"}",
+                    Member = fb.Id, Other = x.On, Z = z, A = x.At, B = x.At, Load = ServiceLoad.Of(x.Reaction), Up = true,
                 });
             fb.Notes.AddRange(r.Notes);
             return fb;

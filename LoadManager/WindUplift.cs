@@ -205,9 +205,9 @@ namespace LoadManager
         /// <summary>A wall's top on a story (<see cref="GravityLoadPath.Key"/>).</summary>
         public Governing<LineLoad> WallTop(string key) => Worst(p => p.TryGetValue(key, out var w) ? w.Load : null);
 
-        /// <summary>A beam's start or end reaction.</summary>
-        public Governing<PointLoad> BeamEnd(string beamId, bool start) =>
-            Worst(p => p.Beams.TryGetValue(beamId, out var m) ? start ? m.StartReaction : m.EndReaction : null);
+        /// <summary>A beam's reaction at one of its supports (<see cref="BeamSupport.Name"/>: "start", "end", "at 12.5 ft").</summary>
+        public Governing<PointLoad> BeamSupport(string beamId, string support) =>
+            Worst(p => p.Beams.TryGetValue(beamId, out var m) ? m.Supports.FirstOrDefault(x => x.Name == support)?.Reaction : null);
 
         /// <summary>What a column carries down to its base.</summary>
         public Governing<PointLoad> Column(string columnId) => Worst(p => p.Columns.TryGetValue(columnId, out var c) ? c.Load : null);

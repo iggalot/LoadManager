@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using BuildingModel.Geometry;
 using BuildingModel.Model;
 
 namespace LoadManager
@@ -51,11 +52,15 @@ namespace LoadManager
                 var words = (h.From ?? "").Split(' ');
                 if (words.Length < 3) continue;
                 string id = words[1];
-                bool start = words[2] == "start";
+                // which support: "beam BM1 start", "… end", "… at 12.5 ft" (partway along), else the one at its place
+                string which = string.Join(" ", words.Skip(2));
                 PointLoad Gravity(GravityLoadPath.Result p)
                 {
                     if (p == null) return null;
-                    if (beam) return p.Beams.TryGetValue(id, out var m) ? (start ? m.StartReaction : m.EndReaction) : null;
+                    if (beam)
+                        return p.Beams.TryGetValue(id, out var m)
+                            ? (m.Supports.FirstOrDefault(x => x.Name == which) ?? m.SupportNear(new Point2(h.X, h.Y)))?.Reaction
+                            : null;
                     return p.Columns.TryGetValue(id, out var c) ? c.Load : null;
                 }
                 if (!beam)

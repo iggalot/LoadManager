@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using BuildingModel.Geometry;
 using BuildingModel.Model;
+using BuildingModel.Statics;
 
 namespace LoadManager
 {
@@ -105,12 +106,41 @@ namespace LoadManager
         public List<PartialLoad> Partials { get; } = new List<PartialLoad>();
         /// <summary>Beams framing into it and columns standing on it.</summary>
         public List<ConcentratedLoad> Points { get; } = new List<ConcentratedLoad>();
-        public PointLoad StartReaction { get; set; } = new PointLoad();
-        public PointLoad EndReaction { get; set; } = new PointLoad();
-        /// <summary>What each end bears on (a wall, a column, a beam), or null when nothing is drawn under it.</summary>
-        public string StartOn { get; set; }
-        public string EndOn { get; set; }
+        /// <summary>
+        /// What holds it up, in order along it: every wall it crosses or rests on, every column under it, and at an end with
+        /// neither, a beam (owner 2026-11-10: supports anywhere, an end past the last one a cantilever). Each with its reaction.
+        /// </summary>
+        public List<BeamSupport> Supports { get; } = new List<BeamSupport>();
+        /// <summary>False: fewer than two supports, it cannot stand (a mechanism); its load is not traced down.</summary>
+        public bool Stands { get; set; } = true;
+        /// <summary>The support at its start, if one is there (else null).</summary>
+        public BeamSupport AtStart => Supports.FirstOrDefault(x => x.Name == "start");
+        public BeamSupport AtEnd => Supports.FirstOrDefault(x => x.Name == "end");
+        /// <summary>The reaction at its start, nothing when its start is a cantilever's tip.</summary>
+        public PointLoad StartReaction => AtStart?.Reaction ?? new PointLoad();
+        public PointLoad EndReaction => AtEnd?.Reaction ?? new PointLoad();
+        /// <summary>What its start or end bears on (a wall, a column, a beam), or null when nothing is under it.</summary>
+        public string StartOn => AtStart?.On;
+        public string EndOn => AtEnd?.On;
+        /// <summary>The support nearest a point (within <paramref name="within"/> ft), or null.</summary>
+        public BeamSupport SupportNear(Point2 p, double within = 1.0) =>
+            Supports.Where(x => Math.Sqrt((x.Where.X - p.X) * (x.Where.X - p.X) + (x.Where.Y - p.Y) * (x.Where.Y - p.Y)) <= within)
+                    .OrderBy(x => (x.Where.X - p.X) * (x.Where.X - p.X) + (x.Where.Y - p.Y) * (x.Where.Y - p.Y)).FirstOrDefault();
         public List<string> Notes { get; } = new List<string>();
+    }
+
+    /// <summary>One support of a beam and its reaction.</summary>
+    public sealed class BeamSupport
+    {
+        /// <summary>"start", "end", or "at 12.5 ft" (from its start): as the shear wall app names its points there.</summary>
+        public string Name { get; set; }
+        /// <summary>ft from the beam's start.</summary>
+        public double At { get; set; }
+        public Point2 Where { get; set; }
+        /// <summary>The wall, column or beam under it.</summary>
+        public string On { get; set; }
+        /// <summary>+ up on the beam: what it carries down. − : the beam pulls it up (it must be held down).</summary>
+        public PointLoad Reaction { get; set; } = new PointLoad();
     }
 
     /// <summary>What a wall on the ground or a column puts on the foundation (service level).</summary>
@@ -310,15 +340,19 @@ namespace LoadManager
                     }
                 }
 
-                // (b) the beams. What each end bears on decides the order: a beam framing into a girder is solved before the
-                // girder, and its end reaction is a point load on it. Beams that bear on each other round a loop (reciprocal
-                // framing) are solved together (Loops).
-                var ends = beams.ToDictionary(m => m.Id, m => (start: SupportOf(m.Start, m.Id, null), end: SupportOf(m.End, m.Id, null)));
+                // (b) the beams. What holds each up (SupportsOf: walls and columns anywhere along it, a beam at an end) decides
+                // the order: a beam framing into a girder is solved before the girder, and its reaction is a point load on it.
+                // Beams that bear on each other round a loop (reciprocal framing) are solved together (SolveBeams).
+                var supports = beams.ToDictionary(m => m.Id, m => SupportsOf(m, bearing, columns, BeamAt));
+                var ends = supports.ToDictionary(k => k.Key, k => k.Value.Select(x => x.On).Where(x => x != null).ToList());
+                string BeamAt(Point2 at, string exceptBeam) =>
+                    beams.FirstOrDefault(x => x.Id != exceptBeam && DistanceToSegment(at, x.Start, x.End) <= Bearing && Dist(at, x.Start) > Bearing && Dist(at, x.End) > Bearing)?.Id
+                    ?? beams.FirstOrDefault(x => x.Id != exceptBeam && (Dist(at, x.Start) <= Bearing || Dist(at, x.End) <= Bearing))?.Id;
                 var order = new List<Beam>();
                 var left = beams.ToList();
                 while (left.Count > 0)
                 {
-                    var ready = left.Where(m => !left.Any(o => o.Id != m.Id && (ends[o.Id].start == m.Id || ends[o.Id].end == m.Id))).ToList();
+                    var ready = left.Where(m => !left.Any(o => o.Id != m.Id && ends[o.Id].Contains(m.Id))).ToList();
                     if (ready.Count == 0) ready = left.ToList(); // a loop: solved together below, in any order
                     order.AddRange(ready);
                     left.RemoveAll(ready.Contains);
@@ -332,9 +366,8 @@ namespace LoadManager
                     var next = new Stack<string>(new[] { w.Id });
                     while (next.Count > 0)
                         if (ends.TryGetValue(next.Pop(), out var e))
-                            foreach (var on in new[] { e.start, e.end })
+                            foreach (var on in e)
                             {
-                                if (on == null) continue;
                                 if (on == by.Id) return true;
                                 if (seen.Add(on)) next.Push(on);
                             }
@@ -377,16 +410,28 @@ namespace LoadManager
                     // the columns and the walls' posts landing on it (the beams' ends come in the solve below)
                     fixedPoints[m.Id] = landings.Where(g => g.Target == m.Id)
                         .Select(g => new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From, Source = g.Source }).ToList();
-                    r.StartOn = ends[m.Id].start; r.EndOn = ends[m.Id].end;
+                    r.Supports.AddRange(supports[m.Id]);
                 }
                 SolveBeams(order, lines, result.Beams, fixedPoints, lv, result.Notes);
                 foreach (var m in order)
                 {
                     var r = result.Beams[m.Id];
-                    foreach (var (on, pt, R, which) in new[] { (r.StartOn, m.Start, r.StartReaction, "start"), (r.EndOn, m.End, r.EndReaction, "end") })
+                    if (!r.Stands)
                     {
-                        if (on == null) { r.Notes.Add($"Nothing drawn under its {which} ({pt.X:0.##}, {pt.Y:0.##}): its reaction is not traced down."); continue; }
-                        if (!R.IsEmpty) landings.Add(new Landing { Target = on, Where = pt, Load = R, From = m.Id, Source = m.Id });
+                        r.Notes.Add(r.Supports.Count == 0
+                            ? "Nothing drawn under it (no wall, column or beam): it cannot stand, and its load is not traced down."
+                            : $"Only one support ({r.Supports[0].On ?? "nothing drawn"} at its {r.Supports[0].Name}): it cannot stand (a cantilever needs a second support behind it), and its load is not traced down. Draw what holds it up.");
+                        continue;
+                    }
+                    double first = r.Supports.Min(x => x.At), last = r.Supports.Max(x => x.At);
+                    if (first > Bearing) r.Notes.Add($"Its start runs {first:0.##} ft past its first support: a cantilever (an overhang).");
+                    if (r.Span - last > Bearing) r.Notes.Add($"Its end runs {r.Span - last:0.##} ft past its last support: a cantilever (an overhang).");
+                    foreach (var x in r.Supports)
+                    {
+                        if (x.On == null) { r.Notes.Add($"Nothing drawn under its {x.Name} ({x.Where.X:0.##}, {x.Where.Y:0.##}): its reaction is not traced down."); continue; }
+                        var up = Lifts(x.Reaction);
+                        if (up != null) r.Notes.Add($"It pulls up on {x.On} at its {x.Name} ({up}): hold it down there.");
+                        if (!IsNil(x.Reaction)) landings.Add(new Landing { Target = x.On, Where = x.Where, Load = x.Reaction, From = m.Id, Source = m.Id });
                     }
                 }
 
@@ -493,53 +538,114 @@ namespace LoadManager
 
         /// <summary>"BM1 via W7": a load brought down through a wall (the first wall it came through is kept).</summary>
         private static string Via(string from, string wall) => from.Contains(" via ") ? from : $"{from} via {wall}";
-
         /// <summary>
-        /// A simple span's end reactions: each load on it on its own, by statics (its floor or roof share step by step along
-        /// it, each wall standing on it step by step, each point load), each kind alike, and summed (owner: never the largest
-        /// over the span).
+        /// What holds a beam up, in order along it: every bearing wall under it (crossing it, ending under it, or under one of
+        /// its ends; a wall along it, the ends of where they overlap), every column under it, and at an end with neither, a
+        /// beam (<paramref name="beamAt"/>: one it lands on partway along, else one whose end is there). Two within
+        /// <see cref="Bearing"/> of each other are one (a wall before a column); one within it of an end is that end.
         /// </summary>
-        private static void Reactions(BeamLoad r)
+        private static List<BeamSupport> SupportsOf(Beam m, List<Wall> bearing, List<Column> columns, Func<Point2, string, string> beamAt)
         {
-            double L = r.Span;
-            if (L <= Tol) return;
-            var total = new PointLoad();
-            var end = new PointLoad();
-            if (r.FromLevelProfile == null || r.FromLevelProfile.IsEmpty)
+            double L = Dist(m.Start, m.End);
+            Point2 At(double t) => L < 1e-9 ? m.Start : new Point2(m.Start.X + (m.End.X - m.Start.X) * t / L, m.Start.Y + (m.End.Y - m.Start.Y) * t / L);
+            double AlongM(Point2 p) => L < 1e-9 ? 0 : Math.Max(0, Math.Min(L, ((p.X - m.Start.X) * (m.End.X - m.Start.X) + (p.Y - m.Start.Y) * (m.End.Y - m.Start.Y)) / L));
+            double Off(Point2 p) => DistanceToSegment(p, m.Start, m.End);
+            var found = new List<(double at, string on, int rank)>();
+            foreach (var w in bearing)
             {
-                total = r.FromLevel.Over(L);
-                end = r.FromLevel.Over(L).Times(0.5);
+                if (DistanceToSegment(m.Start, w.Start, w.End) <= Bearing) found.Add((0, w.Id, 0));
+                if (DistanceToSegment(m.End, w.Start, w.End) <= Bearing) found.Add((L, w.Id, 0));
+                foreach (var p in new[] { w.Start, w.End }) if (Off(p) <= Bearing) found.Add((AlongM(p), w.Id, 0));
+                if (Crossing(m.Start, m.End, w.Start, w.End, out var t)) found.Add((t * L, w.Id, 0));
             }
-            else
-                foreach (var st in r.FromLevelProfile.Steps)
-                {
-                    double a = Math.Max(0, Math.Min(L, st.A)), e = Math.Max(0, Math.Min(L, st.B));
-                    if (e - a <= Tol) continue;
-                    var q = st.Load.Over(e - a);
-                    total += q;
-                    end += q.Times((a + e) / 2 / L);
-                }
-            foreach (var p in r.Partials)
+            foreach (var c in columns) if (Off(c.At) <= Bearing) found.Add((AlongM(c.At), c.Id, 1));
+            // one each place: the ends first, then along it
+            var list = new List<BeamSupport>();
+            var taken = new List<(double at, string on, int rank)>();
+            foreach (var f in found.Select(f => (at: f.at <= Bearing ? 0 : f.at >= L - Bearing ? L : f.at, f.on, f.rank)).OrderBy(f => f.at).ThenBy(f => f.rank))
             {
-                var q = p.Load.Over(p.B - p.A);
-                total += q;
-                end += q.Times((p.A + p.B) / 2 / L);
+                if (taken.Any(x => Math.Abs(x.at - f.at) <= Bearing)) continue;
+                taken.Add(f);
             }
-            foreach (var p in r.Points)
+            foreach (var (at, on, _) in taken) list.Add(new BeamSupport { At = at, On = on });
+            // an end with no wall or column under it: a beam there
+            if (!list.Any(x => x.At <= Bearing)) { var on = beamAt(m.Start, m.Id); if (on != null) list.Insert(0, new BeamSupport { At = 0, On = on }); }
+            if (!list.Any(x => x.At >= L - Bearing)) { var on = beamAt(m.End, m.Id); if (on != null) list.Add(new BeamSupport { At = L, On = on }); }
+            foreach (var x in list)
             {
-                double x = Math.Max(0, Math.Min(L, p.At));
-                total += p.Load;
-                end += p.Load.Times(x / L);
+                x.Name = x.At <= Bearing ? "start" : x.At >= L - Bearing ? "end" : $"at {x.At:0.##} ft";
+                x.Where = x.Name == "start" ? m.Start : x.Name == "end" ? m.End : At(x.At);
             }
-            r.EndReaction = end;
-            r.StartReaction = total + end.Times(-1);
+            return list;
+        }
+
+        /// <summary>Where two segments cross, as a share of the first (0 to 1); false when they do not, or run alongside.</summary>
+        private static bool Crossing(Point2 a, Point2 b, Point2 c, Point2 d, out double t)
+        {
+            t = 0;
+            double rx = b.X - a.X, ry = b.Y - a.Y, sx = d.X - c.X, sy = d.Y - c.Y;
+            double den = rx * sy - ry * sx;
+            if (Math.Abs(den) < 1e-12) return false;
+            double qx = c.X - a.X, qy = c.Y - a.Y;
+            t = (qx * sy - qy * sx) / den;
+            double u = (qx * ry - qy * rx) / den;
+            return t >= -1e-9 && t <= 1 + 1e-9 && u >= -1e-9 && u <= 1 + 1e-9;
+        }
+
+        private static bool IsNil(PointLoad p) =>
+            Math.Abs(p.Dead) < 1e-9 && Math.Abs(p.Live) < 1e-9 && Math.Abs(p.RoofLive) < 1e-9 && Math.Abs(p.Snow) < 1e-9 && Math.Abs(p.Wind) < 1e-9;
+
+        /// <summary>The gravity loads pulling a support up (− reactions), said; null when none does.</summary>
+        private static string Lifts(PointLoad p)
+        {
+            var up = new List<string>();
+            if (p.Dead < -0.5) up.Add($"D {-p.Dead:0}");
+            if (p.Live < -0.5) up.Add($"L {-p.Live:0}");
+            if (p.RoofLive < -0.5) up.Add($"Lr {-p.RoofLive:0}");
+            if (p.Snow < -0.5) up.Add($"S {-p.Snow:0}");
+            return up.Count == 0 ? null : string.Join(", ", up) + " lb up";
         }
 
         /// <summary>
-        /// A level's beams solved together: each one's end reactions with what lands on it (<paramref name="fixedPoints"/>: the
-        /// columns and the walls' posts) and the end reactions of the beams bearing on it. Where beams bear on each other round
-        /// a loop (reciprocal framing, as at a corner of overhangs or an opening framed pinwheel-fashion) each reaction depends
-        /// on the others: R = R0 + A R, linear. It is solved by going round until nothing changes, each pass carried before
+        /// A beam's reactions at its supports, by its own free body (<see cref="BeamStatics"/>): each load on it at its place (its
+        /// floor or roof share step by step along it, each wall standing on it step by step, each point load), each kind alike
+        /// (owner: never the largest over the span). Two supports: statics, an overhang past either; more: a continuous beam,
+        /// EI the same along it (owner 2026-11-10). Fewer than two: it cannot stand (<see cref="BeamLoad.Stands"/>).
+        /// </summary>
+        private static void Reactions(BeamLoad r)
+        {
+            foreach (var x in r.Supports) x.Reaction = new PointLoad();
+            double L = r.Span;
+            if (L <= Tol) { r.Stands = r.Supports.Count > 0; return; }
+            var sets = Enumerable.Range(0, 5).Select(_ => new BeamLoads()).ToArray();
+            double[] Kinds(GravityLoad g) => new[] { g.Dead, g.Live, g.RoofLive, g.Snow, g.Wind };
+            void Spread(double a, double e, LineLoad q)
+            {
+                a = Math.Max(0, Math.Min(L, a)); e = Math.Max(0, Math.Min(L, e));
+                if (e - a <= Tol || q == null) return;
+                var v = Kinds(q);
+                for (int k = 0; k < 5; k++) if (v[k] != 0) sets[k].Spread.Add((a, e, v[k]));
+            }
+            if (r.FromLevelProfile == null || r.FromLevelProfile.IsEmpty) Spread(0, L, r.FromLevel);
+            else foreach (var st in r.FromLevelProfile.Steps) Spread(st.A, st.B, st.Load);
+            foreach (var p in r.Partials) Spread(p.A, p.B, p.Load);
+            foreach (var p in r.Points)
+            {
+                var v = Kinds(p.Load);
+                for (int k = 0; k < 5; k++) if (v[k] != 0) sets[k].Points.Add((Math.Max(0, Math.Min(L, p.At)), v[k]));
+            }
+            var R = BeamStatics.Reactions(L, r.Supports.Select(x => x.At).ToList(), sets);
+            r.Stands = R != null;
+            if (R == null) return;
+            for (int i = 0; i < r.Supports.Count; i++)
+                r.Supports[i].Reaction = new PointLoad { Dead = R[0][i], Live = R[1][i], RoofLive = R[2][i], Snow = R[3][i], Wind = R[4][i] };
+        }
+
+        /// <summary>
+        /// A level's beams solved together: each one's reactions with what lands on it (<paramref name="fixedPoints"/>: the
+        /// columns and the walls' posts) and the reactions of the beams bearing on it. Where beams bear on each other round a
+        /// loop (reciprocal framing, as at a corner of overhangs or an opening framed pinwheel-fashion) each reaction depends on
+        /// the others: R = R0 + A R, linear. It is solved by going round until nothing changes, each pass carried before
         /// carrier (a level with no loop is done in one pass and confirmed by a second). A beam landing partway along another
         /// passes on only a share of its load (a / L &lt; 1), so a loop converges to the exact answer. A loop of beams resting only
         /// on each other's ends, with nothing under them, passes all of it on and never does: a mechanism. It is said so, and
@@ -552,7 +658,7 @@ namespace LoadManager
             var ids = new HashSet<string>(order.Select(m => m.Id));
             var lineOf = order.ToDictionary(m => m.Id, m => lines.First(l => l.IsBeam && l.Id == m.Id));
             double Size(PointLoad p) => Math.Abs(p.Dead) + Math.Abs(p.Live) + Math.Abs(p.RoofLive) + Math.Abs(p.Snow) + Math.Abs(p.Wind);
-            var got = new Dictionary<string, (PointLoad s, PointLoad e)>();
+            var got = new Dictionary<string, PointLoad[]>();
             const int MostPasses = 5000;
             var moving = new HashSet<string>();
             int pass;
@@ -569,22 +675,26 @@ namespace LoadManager
                     foreach (var o in order)
                     {
                         if (o.Id == m.Id || !got.TryGetValue(o.Id, out var ro)) continue;
-                        if (all[o.Id].StartOn == m.Id) r.Points.Add(new ConcentratedLoad { Where = o.Start, At = Along(me, o.Start), Load = ro.s, From = o.Id, Source = o.Id });
-                        if (all[o.Id].EndOn == m.Id) r.Points.Add(new ConcentratedLoad { Where = o.End, At = Along(me, o.End), Load = ro.e, From = o.Id, Source = o.Id });
+                        var os = all[o.Id].Supports;
+                        for (int i = 0; i < os.Count; i++)
+                            if (os[i].On == m.Id)
+                                r.Points.Add(new ConcentratedLoad { Where = os[i].Where, At = Along(me, os[i].Where), Load = ro[i], From = o.Id, Source = o.Id });
                     }
                     Reactions(r);
-                    double d = got.TryGetValue(m.Id, out var was)
-                        ? Size(r.StartReaction + was.s.Times(-1)) + Size(r.EndReaction + was.e.Times(-1))
-                        : Size(r.StartReaction) + Size(r.EndReaction);
-                    if (d > 1e-9 * (1 + Size(r.StartReaction) + Size(r.EndReaction))) moving.Add(m.Id);
+                    var now = r.Supports.Select(x => x.Reaction).ToArray();
+                    double size = now.Sum(Size);
+                    double d = got.TryGetValue(m.Id, out var was) && was.Length == now.Length
+                        ? now.Select((x, i) => Size(x + was[i].Times(-1))).Sum()
+                        : size;
+                    if (d > 1e-9 * (1 + size)) moving.Add(m.Id);
                     change += d;
-                    scale += Size(r.StartReaction) + Size(r.EndReaction);
-                    got[m.Id] = (r.StartReaction, r.EndReaction);
+                    scale += size;
+                    got[m.Id] = now;
                 }
                 if (pass > 0 && change <= 1e-9 * (1 + scale)) break;
             }
 
-            // the loops: beams that, following what their ends bear on, come back to themselves
+            // the loops: beams that, following what holds them up, come back to themselves
             bool Reaches(string from, string to)
             {
                 var seen = new HashSet<string>();
@@ -592,7 +702,7 @@ namespace LoadManager
                 while (next.Count > 0)
                 {
                     var x = next.Pop();
-                    foreach (var on in new[] { all[x].StartOn, all[x].EndOn })
+                    foreach (var on in all[x].Supports.Select(s => s.On))
                     {
                         if (on == null || !ids.Contains(on)) continue;
                         if (on == to) return true;
@@ -615,16 +725,16 @@ namespace LoadManager
             foreach (var m in order.Where(m => moving.Contains(m.Id)))
             {
                 var r = all[m.Id];
-                bool AtEndOf(string on, Point2 p) => on != null && moving.Contains(on) && order.Any(o => o.Id == on && (Dist(o.Start, p) <= Bearing || Dist(o.End, p) <= Bearing));
-                void Say(string other, Point2 p)
+                foreach (var x in r.Supports.Where(x => x.Name == "start" || x.Name == "end"))
                 {
+                    var on = x.On;
+                    if (on == null || !moving.Contains(on) || !order.Any(o => o.Id == on && (Dist(o.Start, x.Where) <= Bearing || Dist(o.End, x.Where) <= Bearing))) continue;
                     cut++;
-                    if (said.Any(q => Dist(q, p) <= Bearing)) return;
-                    said.Add(p);
-                    notes.Add($"{m.Id} and {other} at {lv.Name} rest on each other's ends at ({p.X:0.##}, {p.Y:0.##}) with nothing under them: a mechanism, not traced down there. Draw a column, a post or a wall under that point.");
+                    x.On = null;
+                    if (said.Any(q => Dist(q, x.Where) <= Bearing)) continue;
+                    said.Add(x.Where);
+                    notes.Add($"{m.Id} and {on} at {lv.Name} rest on each other's ends at ({x.Where.X:0.##}, {x.Where.Y:0.##}) with nothing under them: a mechanism, not traced down there. Draw a column, a post or a wall under that point.");
                 }
-                if (AtEndOf(r.StartOn, m.Start)) { Say(r.StartOn, m.Start); r.StartOn = null; }
-                if (AtEndOf(r.EndOn, m.End)) { Say(r.EndOn, m.End); r.EndOn = null; }
             }
             if (cut > 0) SolveBeams(order, lines, all, fixedPoints, lv, notes);
             else notes.Add($"The beams {string.Join(", ", moving)} at {lv.Name} bearing on each other do not settle: their reactions are not reliable.");
