@@ -6,7 +6,13 @@
 - **Projects:**
   - `LoadManager`, the engine (no UI):
     - `LoadSection`: the `Loads` section of the project file: level loads, zones, wall tops, the walls' dead load.
-    - `GravityLoadPath`.
+    - `GravityLoadPath`. What carries what is found from the geometry, level by level from the roof down: a beam end
+      bears on a wall, else a column, else a beam it lands on partway along, else a beam whose end is there
+      (`SupportOf`). Beams are solved carried-before-carrier; beams bearing on each other round a loop (reciprocal
+      framing) are solved together, going round until nothing changes (`SolveBeams`); a loop resting only on each
+      other's ends is a mechanism, said so and not traced. A beam running along the joists or rafters carries half a
+      spacing each side (`ModelDefaults.FloorJoistSpacing`, `RafterSpacing`), taken from the lines across the framing,
+      **never from a member it carries** (owner 2026-11-10: a girder takes nothing off its beams; `Tributaries`).
     - `WindUplift` / `RoofWind`.
     - `LateralSection` (now in `BuildingModel.Core`, `BuildingModel.Model`; 2026-11-06): the shear walls' forces on the foundation and each point's connector, written by the Shear Wall Calculator. Every plan draws them on the Ground plan (the shared sketch).
     - The foundation tab shows the Ground plan (the lowest level), not Level 2.

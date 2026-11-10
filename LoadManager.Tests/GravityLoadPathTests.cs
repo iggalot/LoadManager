@@ -295,8 +295,11 @@ namespace LoadManager.Tests
         }
 
         /// <summary>
-        /// A beam (y = 10, x 0 to 15) from the W wall into a girder (x = 15, y 0 to 20) on the S and N walls. D 10: the beam
-        /// takes 10 ft, 100 plf over 15 ft, so 750 lb each end; the girder carries the 750 at its middle, 375 to each wall.
+        /// A beam (y = 10, x 0 to 15) from the W wall into a girder (x = 15, y 0 to 20) on the S and N walls. D 10, the
+        /// framing S-N at 24 in. (Level 2 is the roof: the rafter spacing). The beam takes 10 ft, 100 plf over 15 ft, so 750 lb
+        /// each end: the girder takes nothing off the beam it carries (owner 2026-11-10: a girder is a primary member). It runs
+        /// along the framing, so it carries the strip 1 ft each side of it where the walls would have it: west of it outside
+        /// the beam's 5 to 15 ft (10 sq ft), all of the east side (20 sq ft): 300 lb. So 375 + 150 = 525 to each wall.
         /// </summary>
         [TestMethod]
         public void Beam_IntoAGirder()
@@ -308,17 +311,20 @@ namespace LoadManager.Tests
             var bm = b.AddBeam(l2, 0, 10, 15, 10);
             LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
             var r = GravityLoadPath.Run(b, LoadSection.Read(b));
-            Assert.AreEqual(750, r.Beams[bm.Id].EndReaction.Dead, Tol);
+            Assert.AreEqual(24, b.Defaults.RafterSpacing, Tol);
+            Assert.AreEqual(750, r.Beams[bm.Id].EndReaction.Dead, 1e-6, "the girder takes nothing off the beam");
             Assert.AreEqual(g.Id, r.Beams[bm.Id].EndOn);
             Assert.AreEqual(w.Id, r.Beams[bm.Id].StartOn);
-            Assert.AreEqual(0, r.Beams[g.Id].FromLevel.Dead, Tol);        // the framing runs along it
+            Assert.AreEqual(20, r.Beams[g.Id].FromLevel.Dead, 1e-6);      // its strip, 2 ft × 10 psf where the walls had it
+            Assert.AreEqual(2, r.Beams[g.Id].TributaryMax, 1e-6);
+            Assert.AreEqual(1, r.Beams[g.Id].TributaryMin, 1e-6, "beside the beam: the east side only");
             Assert.AreEqual(10, r.Beams[g.Id].Points.Single().At, Tol);
-            Assert.AreEqual(375, r.Beams[g.Id].StartReaction.Dead, Tol);
+            Assert.AreEqual(525, r.Beams[g.Id].StartReaction.Dead, 1e-6);
             var ps = r[GravityLoadPath.Key(s.Id, l2.Id)].Points.Single();
             Assert.AreEqual(g.Id, ps.From);
             Assert.AreEqual(15, ps.At, Tol);
-            Assert.AreEqual(375, ps.Load.Dead, Tol);
-            Assert.AreEqual(750, r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single().Load.Dead, Tol);
+            Assert.AreEqual(525, ps.Load.Dead, 1e-6);
+            Assert.AreEqual(750, r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single().Load.Dead, 1e-6);
         }
 
         /// <summary>A roof beam's 1500 lb end on the W wall upstairs comes down to the W wall under it, at the same place.</summary>

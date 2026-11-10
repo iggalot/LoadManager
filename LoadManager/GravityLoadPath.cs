@@ -270,14 +270,17 @@ namespace LoadManager
                                    .Concat(beams.Select(m => new Line { Id = m.Id, Start = m.Start, End = m.End, Dir = DirOf(m.Start, m.End), IsBeam = true })).ToList();
                 var landings = new List<Landing>();
 
-                // what carries a point at this level: a wall under it, a column under it, else a beam on it (not at that beam's own end)
+                // what carries a point at this level: a wall under it, a column under it, else a beam it lands on partway
+                // along, else a beam whose end is there (the load goes straight to that beam's support: a header hung at a
+                // trimmer's end)
                 string SupportOf(Point2 at, string exceptBeam, string exceptColumn)
                 {
                     var w = bearing.FirstOrDefault(x => DistanceToSegment(at, x.Start, x.End) <= Bearing);
                     if (w != null) return w.Id;
                     var c = columns.FirstOrDefault(x => x.Id != exceptColumn && Dist(x.At, at) <= Bearing);
                     if (c != null) return c.Id;
-                    return beams.FirstOrDefault(x => x.Id != exceptBeam && DistanceToSegment(at, x.Start, x.End) <= Bearing && Dist(at, x.Start) > Bearing && Dist(at, x.End) > Bearing)?.Id;
+                    return beams.FirstOrDefault(x => x.Id != exceptBeam && DistanceToSegment(at, x.Start, x.End) <= Bearing && Dist(at, x.Start) > Bearing && Dist(at, x.End) > Bearing)?.Id
+                        ?? beams.FirstOrDefault(x => x.Id != exceptBeam && (Dist(at, x.Start) <= Bearing || Dist(at, x.End) <= Bearing))?.Id;
                 }
 
                 // (a) the columns standing on this level put what they carry on what is under them
@@ -307,21 +310,39 @@ namespace LoadManager
                     }
                 }
 
-                // (b) the beams, those framing into a girder before the girder
+                // (b) the beams. What each end bears on decides the order: a beam framing into a girder is solved before the
+                // girder, and its end reaction is a point load on it. Beams that bear on each other round a loop (reciprocal
+                // framing) are solved together (Loops).
                 var ends = beams.ToDictionary(m => m.Id, m => (start: SupportOf(m.Start, m.Id, null), end: SupportOf(m.End, m.Id, null)));
                 var order = new List<Beam>();
                 var left = beams.ToList();
                 while (left.Count > 0)
                 {
                     var ready = left.Where(m => !left.Any(o => o.Id != m.Id && (ends[o.Id].start == m.Id || ends[o.Id].end == m.Id))).ToList();
-                    if (ready.Count == 0)
-                    {
-                        result.Notes.Add($"Beams at {lv.Name} bear on each other in a loop ({string.Join(", ", left.Select(m => m.Id))}): their reactions may be missing a share.");
-                        ready = left.ToList();
-                    }
+                    if (ready.Count == 0) ready = left.ToList(); // a loop: solved together below, in any order
                     order.AddRange(ready);
                     left.RemoveAll(ready.Contains);
                 }
+                // a beam carries another when that one's ends lead to it, directly or through others: it takes none of the
+                // floor off what it carries (a girder off its beams, a trimmer off its headers)
+                bool Carries(Line by, Line w)
+                {
+                    if (!by.IsBeam || !w.IsBeam || by.Id == w.Id || !ends.ContainsKey(w.Id)) return false;
+                    var seen = new HashSet<string>();
+                    var next = new Stack<string>(new[] { w.Id });
+                    while (next.Count > 0)
+                        if (ends.TryGetValue(next.Pop(), out var e))
+                            foreach (var on in new[] { e.start, e.end })
+                            {
+                                if (on == null) continue;
+                                if (on == by.Id) return true;
+                                if (seen.Add(on)) next.Push(on);
+                            }
+                    return false;
+                }
+                // every bearing line's share of the floor or roof, beams and walls (used in (b) and (c))
+                var shares = Tributaries(lines.Where(l => l.Dir != WallDirection.NotOrthogonal).ToList(), plates, area, zones, Most, Carries);
+                var fixedPoints = new Dictionary<string, List<ConcentratedLoad>>();
                 foreach (var m in order)
                 {
                     var me = lines.First(l => l.IsBeam && l.Id == m.Id);
@@ -330,7 +351,7 @@ namespace LoadManager
                     if (me.Dir == WallDirection.NotOrthogonal) r.Notes.Add("Not square to the plan: the floor or roof on it is not found (only what stands or lands on it).");
                     else
                     {
-                        var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out var beamProfile);
+                        var (lo, hi, edge, load, met, span, beamProfile) = shares[me];
                         r.TributaryMax = hi; r.TributaryMin = lo; r.FramingSpan = span;
                         r.FromLevel = load;
                         r.FromLevelProfile = beamProfile;
@@ -353,10 +374,15 @@ namespace LoadManager
                         foreach (var st in part.Steps)
                             r.Partials.Add(new PartialLoad { From = a.Id, A = st.A, B = st.B, Load = st.Load });
                     }
-                    foreach (var g in landings.Where(g => g.Target == m.Id))
-                        r.Points.Add(new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From, Source = g.Source });
-                    Reactions(r);
+                    // the columns and the walls' posts landing on it (the beams' ends come in the solve below)
+                    fixedPoints[m.Id] = landings.Where(g => g.Target == m.Id)
+                        .Select(g => new ConcentratedLoad { Where = g.Where, At = Along(me, g.Where), Load = g.Load, From = g.From, Source = g.Source }).ToList();
                     r.StartOn = ends[m.Id].start; r.EndOn = ends[m.Id].end;
+                }
+                SolveBeams(order, lines, result.Beams, fixedPoints, lv, result.Notes);
+                foreach (var m in order)
+                {
+                    var r = result.Beams[m.Id];
                     foreach (var (on, pt, R, which) in new[] { (r.StartOn, m.Start, r.StartReaction, "start"), (r.EndOn, m.End, r.EndReaction, "end") })
                     {
                         if (on == null) { r.Notes.Add($"Nothing drawn under its {which} ({pt.X:0.##}, {pt.Y:0.##}): its reaction is not traced down."); continue; }
@@ -369,7 +395,7 @@ namespace LoadManager
                 {
                     var me = lines.First(l => !l.IsBeam && l.Id == w.Id);
                     var r = new WallTopLoad { WallId = w.Id, LevelId = lv.Id };
-                    var (lo, hi, edge, load, met, span) = TributaryAll(me, plates, lines, area, zones, Most, out var levelProfile);
+                    var (lo, hi, edge, load, met, span, levelProfile) = shares[me];
                     double len = me.Length;
                     r.FromLevelProfile = levelProfile;
                     var aboveProfile = new LoadProfile();
@@ -509,12 +535,109 @@ namespace LoadManager
             r.StartReaction = total + end.Times(-1);
         }
 
+        /// <summary>
+        /// A level's beams solved together: each one's end reactions with what lands on it (<paramref name="fixedPoints"/>: the
+        /// columns and the walls' posts) and the end reactions of the beams bearing on it. Where beams bear on each other round
+        /// a loop (reciprocal framing, as at a corner of overhangs or an opening framed pinwheel-fashion) each reaction depends
+        /// on the others: R = R0 + A R, linear. It is solved by going round until nothing changes, each pass carried before
+        /// carrier (a level with no loop is done in one pass and confirmed by a second). A beam landing partway along another
+        /// passes on only a share of its load (a / L &lt; 1), so a loop converges to the exact answer. A loop of beams resting only
+        /// on each other's ends, with nothing under them, passes all of it on and never does: a mechanism. It is said so, and
+        /// those ends are left untraced.
+        /// </summary>
+        private static void SolveBeams(List<Beam> order, List<Line> lines, Dictionary<string, BeamLoad> all,
+                                       Dictionary<string, List<ConcentratedLoad>> fixedPoints, Level lv, List<string> notes)
+        {
+            if (order.Count == 0) return;
+            var ids = new HashSet<string>(order.Select(m => m.Id));
+            var lineOf = order.ToDictionary(m => m.Id, m => lines.First(l => l.IsBeam && l.Id == m.Id));
+            double Size(PointLoad p) => Math.Abs(p.Dead) + Math.Abs(p.Live) + Math.Abs(p.RoofLive) + Math.Abs(p.Snow) + Math.Abs(p.Wind);
+            var got = new Dictionary<string, (PointLoad s, PointLoad e)>();
+            const int MostPasses = 5000;
+            var moving = new HashSet<string>();
+            int pass;
+            for (pass = 0; pass < MostPasses; pass++)
+            {
+                moving.Clear();
+                double change = 0, scale = 0;
+                foreach (var m in order)
+                {
+                    var r = all[m.Id];
+                    var me = lineOf[m.Id];
+                    r.Points.Clear();
+                    r.Points.AddRange(fixedPoints[m.Id]);
+                    foreach (var o in order)
+                    {
+                        if (o.Id == m.Id || !got.TryGetValue(o.Id, out var ro)) continue;
+                        if (all[o.Id].StartOn == m.Id) r.Points.Add(new ConcentratedLoad { Where = o.Start, At = Along(me, o.Start), Load = ro.s, From = o.Id, Source = o.Id });
+                        if (all[o.Id].EndOn == m.Id) r.Points.Add(new ConcentratedLoad { Where = o.End, At = Along(me, o.End), Load = ro.e, From = o.Id, Source = o.Id });
+                    }
+                    Reactions(r);
+                    double d = got.TryGetValue(m.Id, out var was)
+                        ? Size(r.StartReaction + was.s.Times(-1)) + Size(r.EndReaction + was.e.Times(-1))
+                        : Size(r.StartReaction) + Size(r.EndReaction);
+                    if (d > 1e-9 * (1 + Size(r.StartReaction) + Size(r.EndReaction))) moving.Add(m.Id);
+                    change += d;
+                    scale += Size(r.StartReaction) + Size(r.EndReaction);
+                    got[m.Id] = (r.StartReaction, r.EndReaction);
+                }
+                if (pass > 0 && change <= 1e-9 * (1 + scale)) break;
+            }
+
+            // the loops: beams that, following what their ends bear on, come back to themselves
+            bool Reaches(string from, string to)
+            {
+                var seen = new HashSet<string>();
+                var next = new Stack<string>(new[] { from });
+                while (next.Count > 0)
+                {
+                    var x = next.Pop();
+                    foreach (var on in new[] { all[x].StartOn, all[x].EndOn })
+                    {
+                        if (on == null || !ids.Contains(on)) continue;
+                        if (on == to) return true;
+                        if (seen.Add(on)) next.Push(on);
+                    }
+                }
+                return false;
+            }
+            var loop = order.Where(m => Reaches(m.Id, m.Id)).Select(m => m.Id).ToList();
+            if (pass < MostPasses)
+            {
+                if (loop.Count > 0)
+                    notes.Add($"{string.Join(", ", loop)} at {lv.Name} bear on each other round a loop (reciprocal framing): solved together, each reaction with what comes back round the loop.");
+                return;
+            }
+
+            // a mechanism: the ends in the loop that rest on another's end, with nothing under them, carry nothing
+            var said = new List<Point2>();
+            int cut = 0;
+            foreach (var m in order.Where(m => moving.Contains(m.Id)))
+            {
+                var r = all[m.Id];
+                bool AtEndOf(string on, Point2 p) => on != null && moving.Contains(on) && order.Any(o => o.Id == on && (Dist(o.Start, p) <= Bearing || Dist(o.End, p) <= Bearing));
+                void Say(string other, Point2 p)
+                {
+                    cut++;
+                    if (said.Any(q => Dist(q, p) <= Bearing)) return;
+                    said.Add(p);
+                    notes.Add($"{m.Id} and {other} at {lv.Name} rest on each other's ends at ({p.X:0.##}, {p.Y:0.##}) with nothing under them: a mechanism, not traced down there. Draw a column, a post or a wall under that point.");
+                }
+                if (AtEndOf(r.StartOn, m.Start)) { Say(r.StartOn, m.Start); r.StartOn = null; }
+                if (AtEndOf(r.EndOn, m.End)) { Say(r.EndOn, m.End); r.EndOn = null; }
+            }
+            if (cut > 0) SolveBeams(order, lines, all, fixedPoints, lv, notes);
+            else notes.Add($"The beams {string.Join(", ", moving)} at {lv.Name} bearing on each other do not settle: their reactions are not reliable.");
+        }
+
         /// <summary>A floor or roof on a level: where it is and which way its framing spans.</summary>
         private sealed class Plate
         {
             public Region Region;
             public SpanDirection Span;
             public double Overhang;
+            /// <summary>Its joists' or rafters' spacing (ft): a beam running along them carries half of it each side.</summary>
+            public double Spacing;
             /// <summary>The wind on it (the roof, in the uplift pass), else null.</summary>
             public RoofWindCase Wind;
         }
@@ -531,12 +654,13 @@ namespace LoadManager
                 if (plan.IsEmpty) return list;
                 // rafters or trusses run across the ridge
                 var span = b.EffectiveRidge() == RidgeAxis.WestEast ? SpanDirection.SouthNorth : SpanDirection.WestEast;
-                list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o, Wind = wind });
+                list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o, Wind = wind, Spacing = (b.Defaults?.RafterSpacing ?? 0) / 12 });
                 return list;
             }
             var holes = b.OpeningsCutting(lv).SelectMany(x => x.Pieces).ToList();
             foreach (var d in b.Diaphragms.Where(d => d.LevelId == lv.Id && d.Pieces != null && d.Pieces.Count > 0))
-                list.Add(new Plate { Region = Region.Of(d.Pieces.Select(Grow)).Minus(holes), Span = d.EffectiveSpan, Overhang = o, Wind = isRoof ? wind : null });
+                list.Add(new Plate { Region = Region.Of(d.Pieces.Select(Grow)).Minus(holes), Span = d.EffectiveSpan, Overhang = o, Wind = isRoof ? wind : null,
+                                     Spacing = (isRoof ? b.Defaults?.RafterSpacing ?? 0 : b.Defaults?.FloorJoistSpacing ?? 0) / 12 });
             return list;
         }
 
@@ -544,24 +668,56 @@ namespace LoadManager
         /// The tributary width on a bearing line from every plate on the level, the most to an edge past any eave, the most line
         /// load (each kind, along the line: the area loads across the tributary strip, a zone's in its part) and the zones met.
         /// </summary>
-        private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) TributaryAll(Line me, List<Plate> plates, List<Line> lines, AreaLoad area, List<LoadZone> zones,
-            Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
+        /// <remarks>
+        /// Every line's share at once, the lines across the framing first: a beam running along it (<see cref="AlongStrips"/>)
+        /// gets the strip beside it from them, taken as they are found (so none is counted twice), but never from a member it
+        /// carries (<paramref name="carries"/>): a girder takes nothing off the beams framing into it (owner 2026-11-10).
+        /// </remarks>
+        private static Dictionary<Line, (double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile)> Tributaries(
+            List<Line> lines, List<Plate> plates, AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, Func<Line, Line, bool> carries)
         {
-            profile = new LoadProfile();
-            double tMin = double.MaxValue, tMax = 0, edgeMax = 0, spanMax = 0;
-            LineLoad most = null;
-            var met = new List<string>();
+            var per = lines.ToDictionary(l => l, l => new List<(Plate p, double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile)>());
+            var taken = new Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>>();
+            var takenZones = new Dictionary<(Line, Plate), List<string>>();
             foreach (var p in plates)
             {
-                var (lo, hi, edge, load, z, span) = Tributary(me, p, lines, area, zones, pick, out var one);
-                if (hi <= 0) continue;
-                tMin = Math.Min(tMin, lo); tMax = Math.Max(tMax, hi); edgeMax = Math.Max(edgeMax, edge - p.Overhang); spanMax = Math.Max(spanMax, span);
-                most = pick(most, load);
-                profile = profile.Combine(one, pick);
-                met.AddRange(z.Where(x => !met.Contains(x)));
+                var strips = AlongStrips(p, lines);
+                foreach (var x in strips) { taken[(x.m, p)] = new List<(double, double, double, PointLoad)>(); takenZones[(x.m, p)] = new List<string>(); }
+                foreach (var w in lines.Where(w => Across(w, p)))
+                {
+                    var (lo, hi, edge, load, z, span) = Tributary(w, p, lines, strips, carries, taken, takenZones, area, zones, pick, out var one);
+                    per[w].Add((p, lo, hi, edge, load, z, span, one));
+                }
             }
-            return (tMax > 0 ? tMin : 0, tMax, edgeMax, most ?? new LineLoad(), met, spanMax);
+            foreach (var p in plates)
+                foreach (var x in AlongStrips(p, lines))
+                {
+                    var (lo, hi, load) = AlongStrip(x.m, p, x.a, x.b, taken[(x.m, p)], pick, out var one);
+                    per[x.m].Add((p, lo, hi, 0, load, takenZones[(x.m, p)], 0, one));
+                }
+            var result = new Dictionary<Line, (double, double, double, LineLoad, List<string>, double, LoadProfile)>();
+            foreach (var kv in per)
+            {
+                var profile = new LoadProfile();
+                double tMin = double.MaxValue, tMax = 0, edgeMax = 0, spanMax = 0;
+                LineLoad most = null;
+                var met = new List<string>();
+                foreach (var t in kv.Value)
+                {
+                    if (t.hi <= 0) continue;
+                    tMin = Math.Min(tMin, t.lo); tMax = Math.Max(tMax, t.hi); edgeMax = Math.Max(edgeMax, t.edge - t.p.Overhang); spanMax = Math.Max(spanMax, t.span);
+                    most = pick(most, t.load);
+                    profile = profile.Combine(t.profile, pick);
+                    met.AddRange(t.zones.Where(x => !met.Contains(x)));
+                }
+                result[kv.Key] = (tMax > 0 ? tMin : 0, tMax, edgeMax, most ?? new LineLoad(), met, spanMax, profile);
+            }
+            return result;
         }
+
+        /// <summary>Whether a line is across a plate's framing: the joists or rafters bear on it.</summary>
+        private static bool Across(Line w, Plate p) =>
+            p.Span == SpanDirection.WestEast ? w.Dir == WallDirection.SouthNorth : w.Dir == WallDirection.WestEast;
 
         /// <summary>
         /// The line load from a strip across the span (from <paramref name="f"/> to <paramref name="g"/>) at <paramref name="s"/>
@@ -596,8 +752,10 @@ namespace LoadManager
         /// The tributary width of a plate's framing on a bearing line (ft): the least and the most along it, and the most taken to
         /// an edge with no support (0, 0 when the framing runs along the line or the plate does not reach it).
         /// </summary>
-        private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all, AreaLoad area, List<LoadZone> zones,
-            Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
+        private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all,
+            List<(Line m, double c, double h, double a, double b)> strips, Func<Line, Line, bool> carries,
+            Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>> taken, Dictionary<(Line, Plate), List<string>> takenZones,
+            AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
         {
             profile = new LoadProfile();
             var steps = new List<ProfileStep>();
@@ -605,7 +763,7 @@ namespace LoadManager
             var met = new List<string>();
             // joists running W-E bear on S-N lines, and the other way round
             bool alongX = p.Span == SpanDirection.WestEast;
-            if (alongX ? w.Dir != WallDirection.SouthNorth : w.Dir != WallDirection.WestEast) return (0, 0, 0, new LineLoad(), met, 0);
+            if (!Across(w, p)) return (0, 0, 0, new LineLoad(), met, 0);
             double c0 = alongX ? w.Start.X : w.Start.Y;                                   // the line's position across the span
             double s0 = alongX ? Math.Min(w.Start.Y, w.End.Y) : Math.Min(w.Start.X, w.End.X);
             double s1 = alongX ? Math.Max(w.Start.Y, w.End.Y) : Math.Max(w.Start.X, w.End.X);
@@ -648,12 +806,102 @@ namespace LoadManager
                 double f = c0 - Math.Max(0, left), g = c0 + Math.Max(0, right);
                 var strip = Strip(alongX, s, f, g, area, zones, met);
                 if (p.Wind != null) strip.Wind += WindAcross(p.Wind, alongX, s, f, g);
-                most = pick(most, strip);
                 double st = alongX ? w.Start.Y : w.Start.X, half = (s1 - s0) / n / 2;
+                // less the strips the beams along the framing take (each counted once, on the beam): the share of this
+                // step inside a strip, over the part of the span the beam runs along; never off a member the beam carries
+                foreach (var ts in strips)
+                {
+                    if (carries(ts.m, w)) continue;
+                    double ov = Math.Min(s + half, ts.c + ts.h) - Math.Max(s - half, ts.c - ts.h);
+                    double fa = Math.Max(f, ts.a), ga = Math.Min(g, ts.b);
+                    if (ov <= 1e-9 || ga - fa <= 1e-9) continue;
+                    var off = Strip(alongX, s, fa, ga, area, zones, takenZones[(ts.m, p)]);
+                    if (p.Wind != null) off.Wind += WindAcross(p.Wind, alongX, s, fa, ga);
+                    strip = Less(strip, off, Math.Min(1, ov / (2 * half)));
+                    taken[(ts.m, p)].Add((fa, ga, ov, off.Over(ov)));
+                }
+                most = pick(most, strip);
                 steps.Add(new ProfileStep { A = Math.Min(Math.Abs(s - half - st), Math.Abs(s + half - st)), B = Math.Max(Math.Abs(s - half - st), Math.Abs(s + half - st)), Load = strip });
             }
             profile = LoadProfile.Of(steps, pick);
             return any ? (lo, hi, edge, most ?? new LineLoad(), met, span) : (0, 0, 0, new LineLoad(), new List<string>(), 0);
+        }
+
+        private static LineLoad Less(LineLoad a, LineLoad b, double k) => new LineLoad
+        {
+            Dead = a.Dead - k * b.Dead, Live = a.Live - k * b.Live, RoofLive = a.RoofLive - k * b.RoofLive, Snow = a.Snow - k * b.Snow, Wind = a.Wind - k * b.Wind,
+        };
+
+        /// <summary>
+        /// The beams running along a plate's framing (trimmers, beams parallel to the joists or rafters) and the strip each
+        /// carries: half a spacing each side (<see cref="Plate.Spacing"/>), less where another line along the framing is nearer.
+        /// Each: the beam, its position across the span, the strip's half width, and where it runs along the span.
+        /// </summary>
+        private static List<(Line m, double c, double h, double a, double b)> AlongStrips(Plate p, List<Line> all)
+        {
+            var list = new List<(Line m, double c, double h, double a, double b)>();
+            if (!(p.Spacing > 0)) return list;
+            bool alongX = p.Span == SpanDirection.WestEast;
+            var dir = alongX ? WallDirection.WestEast : WallDirection.SouthNorth;
+            (double c, double a, double b) Of(Line o) => alongX ? (o.Start.Y, Math.Min(o.Start.X, o.End.X), Math.Max(o.Start.X, o.End.X))
+                                                                : (o.Start.X, Math.Min(o.Start.Y, o.End.Y), Math.Max(o.Start.Y, o.End.Y));
+            var par = all.Where(o => o.Dir == dir).ToList();
+            foreach (var m in par.Where(o => o.IsBeam))
+            {
+                var (c, a, b) = Of(m);
+                double h = p.Spacing / 2;
+                foreach (var o in par)
+                {
+                    if (ReferenceEquals(o, m)) continue;
+                    var (oc, oa, ob) = Of(o);
+                    if (ob <= a + Tol || oa >= b - Tol) continue;
+                    double d = Math.Abs(oc - c);
+                    if (d > Bearing) h = Math.Min(h, d / 2);
+                }
+                list.Add((m, c, h, a, b));
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// The floor or roof a beam running along the framing carries: what it took from the lines across the framing beside
+        /// it (<see cref="Tributaries"/>), half a spacing each side where there is floor (none over an opening) and where no
+        /// member it carries has it, spread step by step along it as found.
+        /// </summary>
+        private static (double lo, double hi, LineLoad load) AlongStrip(Line w, Plate p, double a0, double b0,
+            List<(double fa, double ga, double ov, PointLoad total)> got, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
+        {
+            profile = new LoadProfile();
+            bool alongX = p.Span == SpanDirection.WestEast;
+            int n = Math.Max(1, (int)Math.Ceiling((b0 - a0) / Step));
+            double d = (b0 - a0) / n, st = alongX ? w.Start.X : w.Start.Y;
+            if (!(d > 1e-9)) return (0, 0, new LineLoad());
+            var lb = Enumerable.Range(0, n).Select(i => new PointLoad()).ToArray();
+            var width = new double[n];
+            foreach (var g in got)
+            {
+                double len = g.ga - g.fa;
+                if (len <= 1e-12) continue;
+                for (int i = 0; i < n; i++)
+                {
+                    double x0 = a0 + i * d, o = Math.Min(x0 + d, g.ga) - Math.Max(x0, g.fa);
+                    if (o <= 0) continue;
+                    lb[i] = lb[i] + g.total.Times(o / len);
+                    width[i] += g.ov * o / d;
+                }
+            }
+            LineLoad most = null;
+            var steps = new List<ProfileStep>();
+            for (int i = 0; i < n; i++)
+            {
+                var q = new LineLoad { Dead = lb[i].Dead / d, Live = lb[i].Live / d, RoofLive = lb[i].RoofLive / d, Snow = lb[i].Snow / d, Wind = lb[i].Wind / d };
+                most = pick(most, q);
+                double x0 = a0 + i * d, x1 = x0 + d;
+                steps.Add(new ProfileStep { A = Math.Min(Math.Abs(x0 - st), Math.Abs(x1 - st)), B = Math.Max(Math.Abs(x0 - st), Math.Abs(x1 - st)), Load = q });
+            }
+            profile = LoadProfile.Of(steps, pick);
+            double hi = width.Max();
+            return (hi > 1e-9 ? width.Min() : 0, hi > 1e-9 ? hi : 0, most ?? new LineLoad());
         }
 
         /// <summary>
