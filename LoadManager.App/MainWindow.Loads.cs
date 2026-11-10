@@ -193,7 +193,7 @@ namespace LoadManager.App
         private void AreaLoads()
         {
             if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return; }
-            var w = new Wpf.AreaLoadsWindow(B) { Owner = this };
+            var w = new Wpf.AreaLoadsWindow(B, readOnly: viewOnly) { Owner = this };
             if (w.ShowDialog() != true) return;
             var levels = w.Levels;
             double wallDead = w.WallDead;

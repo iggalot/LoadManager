@@ -28,7 +28,8 @@ namespace LoadManager.Wpf
         /// <summary>The walls' own weight entered (psf of wall), when OK.</summary>
         public double WallDead { get; private set; }
 
-        public AreaLoadsWindow(Building b)
+        /// <param name="readOnly">View only (someone else is working on the project): the loads shown, nothing typed, Close only.</param>
+        public AreaLoadsWindow(Building b, bool readOnly = false)
         {
             Title = "Floor and roof loads";
             SizeToContent = SizeToContent.WidthAndHeight;
@@ -117,6 +118,24 @@ namespace LoadManager.Wpf
             buttons.Children.Add(cancel);
             root.Children.Add(buttons);
             Content = root;
+            if (readOnly) MakeReadOnly(root, cancel);
+        }
+
+        /// <summary>View only: every box read only, the choices off, no Add or Remove or OK; Cancel is Close.</summary>
+        private void MakeReadOnly(DependencyObject root, Button close)
+        {
+            Title += " (view only)";
+            void Walk(DependencyObject d)
+            {
+                if (d is TextBox t) t.IsReadOnly = true;
+                else if (d is ComboBox c) c.IsEnabled = false;
+                else if (d is CheckBox k) k.IsEnabled = false;
+                else if (d is Button bt && bt != close) bt.Visibility = Visibility.Collapsed;
+                foreach (var child in LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>()) Walk(child);
+            }
+            Walk(root);
+            close.Content = "Close";
+            close.IsDefault = true;
         }
 
         private readonly List<Level> levelsDown;
