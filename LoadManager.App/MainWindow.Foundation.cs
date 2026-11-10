@@ -118,6 +118,9 @@ namespace LoadManager.App
                 string stale = lateral.Stale(B);
                 // stamped with what they were found from: out of date exactly when the building or the wind changed since
                 var changed = ModelFingerprint.ChangedFromModel(lateral.BasedOn, B);
+                // a declared shear wall with no design brings nothing down: said first, in red
+                string notDesigned = lateral.NotDesignedWords();
+                if (notDesigned != null) side.Children.Add(new TextBlock { Text = notDesigned, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Error, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 4) });
                 if (stale != null) side.Children.Add(new TextBlock { Text = "They may be out of date: " + stale + " Save the shear wall design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
                 else if (changed != null && changed.Count > 0)
                     side.Children.Add(new TextBlock { Text = $"They are out of date: {string.Join(" and ", changed.Select(ModelFingerprint.Words))} changed since the shear walls were saved. Open the Shear Wall Calculator and save the design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
