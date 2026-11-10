@@ -115,16 +115,15 @@ namespace LoadManager.App
             else
             {
                 side.Children.Add(Para($"Shear wall ends: {lateral.Points.Count} from {lateral.Source} ({lateral.Cases.Count} cases), saved {lateral.Saved} on revision {lateral.ModelRevision}." + (string.IsNullOrEmpty(lateral.Note) ? "" : " " + lateral.Note), true));
-                string stale = lateral.Stale(B);
-                // stamped with what they were found from: out of date exactly when the building or the wind changed since
-                var changed = ModelFingerprint.ChangedFromModel(lateral.BasedOn, B);
+                // a wall gone or moved, or stamped with what they were found from and the building or the wind changed since
+                // (the one routine every app's views use)
+                string outOfDate = lateral.OutOfDate(B);
                 // a declared shear wall with no design brings nothing down: said first, in red
                 string notDesigned = lateral.NotDesignedWords();
                 if (notDesigned != null) side.Children.Add(new TextBlock { Text = notDesigned, TextWrapping = TextWrapping.Wrap, Foreground = Ui.Error, FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 4) });
-                if (stale != null) side.Children.Add(new TextBlock { Text = "They may be out of date: " + stale + " Save the shear wall design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
-                else if (changed != null && changed.Count > 0)
-                    side.Children.Add(new TextBlock { Text = $"They are out of date: {string.Join(" and ", changed.Select(ModelFingerprint.Words))} changed since the shear walls were saved. Open the Shear Wall Calculator and save the design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
-                else if (changed == null && lateral.ModelRevision > 0 && doc.Revision > lateral.ModelRevision + 1)
+                if (outOfDate != null)
+                    side.Children.Add(new TextBlock { Text = "They are out of date: " + outOfDate + " Open the Shear Wall Calculator and save the design again.", TextWrapping = TextWrapping.Wrap, Foreground = Ui.Warning, Margin = new Thickness(0, 0, 0, 4) });
+                else if ((lateral.BasedOn == null || lateral.BasedOn.Count == 0) && lateral.ModelRevision > 0 && doc.Revision > lateral.ModelRevision + 1)
                     side.Children.Add(Para($"The model has been saved since (revision {doc.Revision}): if the walls or the wind changed, save the shear wall design again.", true));
                 ConnectionsSummary();
             }
