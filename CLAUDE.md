@@ -23,7 +23,7 @@
   - **The plan's selection is the shared sketch's** (`InitPicking` in `MainWindow.Loads.cs`): walls from the model, the
     zones (`zone:<i>`) and foundation points (`point:<from>`) as its own objects. Several walls: one top load for all;
     several zones: delete them all. Never add a picking of its own.
-  - **One Load Manager per project:** it holds the `loads` project lock (`ProjectLock` in `BuildingModel.Core`).
+  - **One Load Manager per project:** it holds the `loads` project lock (`ProjectLock` in `BuildingModel.Core`). Someone else's project opens view only (`viewOnly`: `Edit` puts the loads back, the side panel read only, no saves).
 - **The foundation with no window:** `FoundationCheck` (LoadManager core): `RoofWindOf` (the wind from `WindCheck`),
   `Analyze` (the load path, the uplift, `FoundationAnalysis`), `Run` (all of it, with given shear wall forces). The window
   uses `RoofWindOf` and `Analyze`; the hub uses `Run`. Uplift is a flag for the foundation design, not a fault. Stale shear

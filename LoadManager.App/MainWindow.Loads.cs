@@ -157,6 +157,7 @@ namespace LoadManager.App
         private void StartZone()
         {
             if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return; }
+            if (viewOnly) { Say(ViewOnlyMessage); return; }
             if (mode != Mode.Loads) SetMode(Mode.Loads);
             drawingZone = true;
             sketch.Cursor = Cursors.Cross;
@@ -199,7 +200,7 @@ namespace LoadManager.App
             var zones = w.Zones;
             string what = "Floor and roof loads: " + string.Join("; ", B.LevelsBottomUp.Where(l => levels.ContainsKey(l.Id)).Select(l => $"{l.Name} {levels[l.Id]} psf")) + $"; walls {wallDead:0.##} psf" +
                           (zones.Count > 0 ? $"; zones {string.Join(", ", zones.Select(z => z.Name))}." : ".");
-            if (!Edit(what, b => { LoadSection.SetAreaLoads(b, levels, wallDead); LoadSection.SetZones(b, zones); })) Say("No change.");
+            if (!Edit(what, b => { LoadSection.SetAreaLoads(b, levels, wallDead); LoadSection.SetZones(b, zones); }) && !viewOnly) Say("No change.");
         }
 
         private void ShowUplift() => new Wpf.WindUpliftWindow(B, uplift, windWhy) { Owner = this }.Show();
@@ -218,6 +219,7 @@ namespace LoadManager.App
                 return;
             }
             if (mode == Mode.Loads) LoadsSide(); else FoundationSide();
+            SideReadOnly();
         }
 
         private void LoadsSide()
@@ -308,7 +310,7 @@ namespace LoadManager.App
                 if (v[2] - v[0] < 1 || v[3] - v[1] < 1) { Say("The zone must be at least 1 × 1 ft: \"to\" past \"from\"."); return; }
                 var list = zones.ToList();
                 list[i] = new LoadZone { LevelId = z.LevelId, Name = string.IsNullOrWhiteSpace(name.Text) ? z.Name : name.Text.Trim(), X0 = v[0], Y0 = v[1], X1 = v[2], Y1 = v[3], Load = new AreaLoad { Dead = v[4], Live = v[5], RoofLive = v[6], Snow = v[7] } };
-                if (!Edit($"{list[i].Name}: {list[i]}.", b => LoadSection.SetZones(b, list))) Say("No change.");
+                if (!Edit($"{list[i].Name}: {list[i]}.", b => LoadSection.SetZones(b, list)) && !viewOnly) Say("No change.");
             }));
             buttons.Children.Add(Link("Delete", "Delete this zone (Del)", () => DeleteZone(i)));
             side.Children.Add(buttons);
@@ -361,7 +363,7 @@ namespace LoadManager.App
                 for (int k = 0; k < 4; k++) ok &= Number(boxes[k], out v[k]);
                 if (!ok) { Say("Each value must be a number, 0 or more."); return; }
                 var load = new LineLoad { Dead = v[0], Live = v[1], RoofLive = v[2], Snow = v[3] };
-                if (!Edit($"{walls.Count} walls at {lv.Name}: top load by hand {load} plf.", b => { foreach (var w in walls) LoadSection.SetWallTop(b, w.Id, lv.Id, load); })) Say("No change.");
+                if (!Edit($"{walls.Count} walls at {lv.Name}: top load by hand {load} plf.", b => { foreach (var w in walls) LoadSection.SetWallTop(b, w.Id, lv.Id, load); }) && !viewOnly) Say("No change.");
             }));
             if (tops.Any(t => t != null))
                 buttons.Children.Add(Link("Clear on all (use the load path)", "Remove the entered values of every wall selected", () =>
@@ -416,7 +418,7 @@ namespace LoadManager.App
                 for (int k = 0; k < 4; k++) ok &= Number(boxes[k], out v[k]);
                 if (!ok) { Say("Each value must be a number, 0 or more."); return; }
                 var load = new LineLoad { Dead = v[0], Live = v[1], RoofLive = v[2], Snow = v[3] };
-                if (!Edit($"Wall {w.Id} at {lv.Name}: top load by hand {load} plf.", b => LoadSection.SetWallTop(b, w.Id, lv.Id, load))) Say("No change.");
+                if (!Edit($"Wall {w.Id} at {lv.Name}: top load by hand {load} plf.", b => LoadSection.SetWallTop(b, w.Id, lv.Id, load)) && !viewOnly) Say("No change.");
             }));
             if (entered != null)
                 buttons.Children.Add(Link("Clear (use the load path)", "Remove the entered values", () =>

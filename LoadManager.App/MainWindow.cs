@@ -151,9 +151,11 @@ namespace LoadManager.App
 
             var root = new DockPanel();
             DockPanel.SetDock(appBar, Dock.Top);
+            DockPanel.SetDock(viewOnlyBanner, Dock.Top);
             DockPanel.SetDock(statusBar, Dock.Bottom);
             DockPanel.SetDock(sideBorder, Dock.Right);
             root.Children.Add(appBar);
+            root.Children.Add(viewOnlyBanner);
             root.Children.Add(statusBar);
             root.Children.Add(sideBorder);
             root.Children.Add(center);
@@ -233,10 +235,11 @@ namespace LoadManager.App
         public void Open(string file)
         {
             // one Load Manager per project (the same project again keeps this app's own lock)
-            bool refused = false;
+            bool refused = false, lookOnly = false;
             var taken = projectLock != null && string.Equals(projectLock.ModelPath, file, StringComparison.OrdinalIgnoreCase)
-                ? projectLock : ProjectDialogs.TakeLock(this, file, "loads", "Load Manager", out refused);
+                ? projectLock : ProjectDialogs.TakeLock(this, file, "loads", "Load Manager", true, out refused, out lookOnly);
             if (refused) return;
+            SetViewOnly(lookOnly);
             try
             {
                 ProjectFolder.OpenFor(file);
@@ -278,6 +281,11 @@ namespace LoadManager.App
         private bool Save()
         {
             if (string.IsNullOrEmpty(path)) { MessageBox.Show(this, "Open a project first (File > Open).", "Save"); return false; }
+            if (viewOnly)
+            {
+                MessageBox.Show(this, "View only: someone else is working on this project, so the loads are not saved from here.", "Save", MessageBoxButton.OK, MessageBoxImage.Information);
+                return false;
+            }
             try
             {
                 var fresh = ModelFile.Load(path);
@@ -313,7 +321,7 @@ namespace LoadManager.App
 
         private bool ConfirmDiscard()
         {
-            if (!Dirty) return true;
+            if (!Dirty || viewOnly) return true;
             return ProjectDialogs.SaveChangesFirst(this, "Save the load changes first?", "Load Manager", Save);
         }
 
@@ -339,7 +347,7 @@ namespace LoadManager.App
                 return;
             }
             string mine = LoadsJson();
-            bool keep = Dirty;
+            bool keep = Dirty && !viewOnly; // view only: theirs is read, nothing here is kept
             string lvl = sketch.ActiveLevel?.Id;
             doc = d;
             sketch.SetBuilding(d.Building, lvl);
@@ -361,11 +369,58 @@ namespace LoadManager.App
 
         private void ResetHistory() => history.Reset(LoadsJson());
 
+        /// <summary>
+        /// Someone else's project, opened to look at only (the suite's view-only mode): no lock, no saves, no "save first?",
+        /// the side panel's boxes read only and every load edit put back (<see cref="Edit"/>); their saves are read as they
+        /// make them. Opening the project again once they have closed it works on it.
+        /// </summary>
+        private bool viewOnly;
+        public const string ViewOnlyMessage = "View only: someone else is working on this project, so the loads cannot be changed here.";
+        private readonly Border viewOnlyBanner = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0x3F, 0x4A, 0x5C)), Padding = new Thickness(10, 5, 10, 5), Visibility = Visibility.Collapsed,
+            Child = new TextBlock
+            {
+                Text = "View only: someone else is working on this project. You can look at the loads and the foundation; nothing can be changed or saved here. Their saves show here as they make them. Open it again once they have closed it.",
+                Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap,
+            },
+        };
+
+        private void SetViewOnly(bool on)
+        {
+            viewOnly = on;
+            sketch.ViewOnly = on;
+            viewOnlyBanner.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (on) Log.Info("Project", "View only: someone else is working on this project.");
+        }
+
+        /// <summary>View only: every box in the side panel read only (what it shows stays selectable and copyable).</summary>
+        private void SideReadOnly()
+        {
+            if (!viewOnly) return;
+            void Walk(DependencyObject d)
+            {
+                if (d is TextBox t) t.IsReadOnly = true;
+                else if (d is ComboBox c) c.IsEnabled = false;
+                else if (d is CheckBox k) k.IsEnabled = false;
+                foreach (var child in LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>()) Walk(child);
+            }
+            Walk(side);
+        }
+
         /// <summary>One edit of the loads (an undo step, named <paramref name="what"/>), made by <paramref name="change"/> on the building's data. False: nothing changed.</summary>
         private bool Edit(string what, Action<Building> change)
         {
             if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return false; }
             change(B);
+            if (viewOnly)
+            {
+                PutLoads(history.Current); // put back
+                Changed();
+                Log.Info("Loads", "Refused (view only): " + what);
+                Say(ViewOnlyMessage);
+                return false;
+            }
             if (!history.Record(LoadsJson(), what)) return false;
             Log.Info("Loads", what);
             Changed();
@@ -416,7 +471,7 @@ namespace LoadManager.App
             RefreshFreeBody();
             Title3D();
             sketch.Select(sketch.Selection.ToList()); // what is still there stays selected (an undo may have taken a zone or a wall)
-            Title = $"{(string.IsNullOrEmpty(path) ? "No project" : Path.GetFileName(path))}{(Dirty ? " *" : "")} — Load Manager";
+            Title = $"{(string.IsNullOrEmpty(path) ? "No project" : Path.GetFileName(path))}{(Dirty ? " *" : "")}{(viewOnly ? " (view only)" : "")} — Load Manager";
             UpdateLevelBar();
             RefreshSide();
             diagram.Highlight = selectedPoint;
