@@ -30,6 +30,8 @@ namespace LoadManager.App
         /// <summary>The walls picked together (two or more), and the zones (by index).</summary>
         private List<string> selectedWalls = new List<string>();
         private List<int> selectedZones = new List<int>();
+        /// <summary>The framing areas picked on the Loads plan: their use is given in the side panel.</summary>
+        private List<string> selectedAreas = new List<string>();
 
         // the Load Manager's own objects in the plan's selection (the shared sketch's: click, Shift+click, a window, Ctrl+A, Del)
         private const string ZonePrefix = "zone:", PointPrefix = "point:";
@@ -48,6 +50,8 @@ namespace LoadManager.App
             selectedPoint = points.Count == 1 && selectedWalls.Count <= 1 ? points[0] : null;
             selectedWall = selectedWalls.Count == 1 ? selectedWalls[0] : selectedPoint?.WallId;
             selectedZone = selectedZones.Count == 1 && selectedWalls.Count == 0 ? selectedZones[0] : -1;
+            selectedAreas = mode != Mode.Loads ? new List<string>() : sketch.SelectedOf<FramingArea>().Select(a => a.Id)
+                .Concat(sketch.SelectedOf<Diaphragm>().SelectMany(d => d.Framing ?? new List<FramingArea>()).Select(a => a.Id)).Distinct().OrderBy(x => x).ToList();
             var diaphragms = sketch.SelectedOf<Diaphragm>().Select(d => d.LevelId).Distinct().ToList();
             selectedDiaphragm = diaphragms.Count == 1 && selectedWalls.Count == 0 && selectedPoint == null ? diaphragms[0] : null;
             diagram.Highlight = selectedPoint;
@@ -89,7 +93,9 @@ namespace LoadManager.App
         {
             sketch.GeometryLocked = true; // the plan is for looking and picking: no grips, nothing moved
             sketch.GeometryLockedMessage = "The building is edited in the Building Model.";
-            sketch.PickFilter = o => o is Wall || (mode == Mode.Foundation && o is Diaphragm); // a diaphragm: its free body in the wind
+            // a diaphragm: its free body in the wind (Foundation); a framing area, or a floor framed one way (its one area): its use (Loads)
+            sketch.PickFilter = o => o is Wall || (mode == Mode.Foundation && o is Diaphragm) || (mode == Mode.Loads && (o is FramingArea || o is Diaphragm));
+            sketch.AreaNote = a => mode == Mode.Loads ? AreaNoteOf(a) : null;
             sketch.HostPickFirst = true; // a foundation point stands on its wall: the point first
             sketch.HostOwns = id => ZoneIndex(id) is int zi && zi >= 0 ? mode == Mode.Loads && zi < (LoadSection.Read(B).Zones?.Count ?? 0) : mode == Mode.Foundation && PointOf(id) != null;
             sketch.HostPick = (at, tol) =>
@@ -198,9 +204,10 @@ namespace LoadManager.App
             var levels = w.Levels;
             double wallDead = w.WallDead;
             var zones = w.Zones;
+            var uses = w.Uses;
             string what = "Floor and roof loads: " + string.Join("; ", B.LevelsBottomUp.Where(l => levels.ContainsKey(l.Id)).Select(l => $"{l.Name} {levels[l.Id]} psf")) + $"; walls {wallDead:0.##} psf" +
-                          (zones.Count > 0 ? $"; zones {string.Join(", ", zones.Select(z => z.Name))}." : ".");
-            if (!Edit(what, b => { LoadSection.SetAreaLoads(b, levels, wallDead); LoadSection.SetZones(b, zones); }) && !viewOnly) Say("No change.");
+                          (uses.Count > 0 ? $"; uses {string.Join(", ", uses.Select(u => u.Name))}" : "") + (zones.Count > 0 ? $"; zones {string.Join(", ", zones.Select(z => z.Name))}." : ".");
+            if (!Edit(what, b => { LoadSection.SetAreaLoads(b, levels, wallDead); LoadSection.SetUses(b, uses); LoadSection.SetZones(b, zones); }) && !viewOnly) Say("No change.");
         }
 
         private void ShowUplift() => new Wpf.WindUpliftWindow(B, uplift, windWhy) { Owner = this }.Show();
@@ -254,7 +261,8 @@ namespace LoadManager.App
             side.Children.Add(Head($"{lv.Name}, {(isRoof ? "roof" : "floor")} at {lv.Elevation:0.##} ft"));
             var a = s.Level(lv.Id);
             side.Children.Add(Para("Area loads: " + Loads(a, "psf") + $"; walls' own weight {s.WallDead:0.##} psf of wall."));
-            side.Children.Add(Link("Floor and roof loads…", "Every level's area loads, the zones and the walls' own weight", AreaLoads));
+            side.Children.Add(Link("Floor and roof loads…", "Every level's area loads, the uses, the zones and the walls' own weight", AreaLoads));
+            FramingAreasSide(lv, s);
 
             // zones
             var zones = s.Zones ?? new List<LoadZone>();
@@ -299,6 +307,115 @@ namespace LoadManager.App
                 side.Children.Add(Head("Load path notes"));
                 foreach (var n in loadPath.Notes) side.Children.Add(Para("• " + n, true));
             }
+        }
+
+        // ------------------------------------------------------------------ framing areas and their uses
+
+        private string noteJson;
+        private LoadSection noteSection;
+
+        /// <summary>What the plan says after a framing area's span label (Loads): its use's loads; null: the level's, nothing picked.</summary>
+        private string AreaNoteOf(FramingArea a)
+        {
+            string j = LoadsJson();
+            if (noteSection == null || j != noteJson) { noteJson = j; noteSection = LoadSection.Read(B); }
+            return UseText(noteSection, a, false);
+        }
+
+        /// <summary>
+        /// A framing area's loads, in words: "Hallway: D 10 · L 40 psf", "the level's loads". Short (<paramref name="full"/>
+        /// false, the plan's): the use's name only when it is not the area's own, and null for the level's loads by default.
+        /// </summary>
+        private static string UseText(LoadSection s, FramingArea a, bool full)
+        {
+            var u = s.UseOf(a, out bool picked);
+            string pickedAs = picked ? s.AreaUses[a.Id] : null;
+            if (u != null)
+                return full ? $"{u.Name}: {Loads(u.Load, "psf")} ({(picked ? "picked here" : "by its name")})"
+                            : (picked ? u.Name + ": " : "") + Loads(u.Load, "psf");
+            if (picked && pickedAs == LoadSection.LevelsLoads) return full ? "the level's loads (picked here)" : "level's loads";
+            if (picked) return full ? $"the level's loads: no use is named {pickedAs} now (picked here)" : $"no use {pickedAs}: level's loads";
+            if (!string.IsNullOrWhiteSpace(a.Name)) return full ? $"the level's loads (no use is named {a.Name.Trim()})" : "level's loads";
+            return full ? "the level's loads (no name, nothing picked)" : null;
+        }
+
+        private static string AreaTitle(FramingArea a) => a.Id + (string.IsNullOrWhiteSpace(a.Name) ? "" : " " + a.Name.Trim());
+
+        /// <summary>
+        /// The level's framing areas (the Building Model's) and the loads each takes: its use, picked here or by its name (a
+        /// hallway, a balcony), else the level's. A complex house's many areas need no loads one by one: the uses are entered
+        /// once (Floor and roof loads) and every area named as one takes its loads.
+        /// </summary>
+        private void FramingAreasSide(Level lv, LoadSection s)
+        {
+            var areas = FramingAreas.On(B, lv).ToList();
+            side.Children.Add(Head($"Framing areas on {lv.Name} ({areas.Count})"));
+            if (areas.Count == 0) { side.Children.Add(Para("No floor or roof is drawn on this level.", true)); return; }
+            side.Children.Add(Para("Each framing area takes the loads of its use: the one picked here, else the use its name gives (an area named Hallway takes the Hallway use), else the level's. " +
+                                   "Click an area on the plan (Shift+click for several) to pick its use; the uses are entered in Floor and roof loads. A load zone still wins inside it.", true));
+            var counts = areas.GroupBy(a => s.UseOf(a)?.Name ?? "the level's loads").OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}");
+            side.Children.Add(Para(string.Join(" · ", counts)));
+            if (areas.Count <= 40)
+                foreach (var a in areas)
+                {
+                    string id = a.Id;
+                    bool on = selectedAreas.Contains(id);
+                    var b = new Button
+                    {
+                        Content = $"{AreaTitle(a)}: {UseText(s, a, false) ?? "level's loads"}", HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(0, 1, 0, 1),
+                        Background = on ? Ui.Checked : Brushes.White, BorderBrush = on ? Ui.CheckedEdge : Ui.Line,
+                    };
+                    System.Windows.Automation.AutomationProperties.SetName(b, "Framing area " + id);
+                    b.Click += (o, e) =>
+                    {
+                        // Shift or Ctrl adds the area to the selection (or takes it out), as on the plan
+                        if ((Keyboard.Modifiers & (ModifierKeys.Shift | ModifierKeys.Control)) == 0) sketch.Select(new[] { id });
+                        else if (selectedAreas.Contains(id)) sketch.Select(sketch.Selection.Where(x => x != id && !(B.Find(x) is Diaphragm d && (d.Framing ?? new List<FramingArea>()).Any(f => f.Id == id))).ToList());
+                        else sketch.Select(new[] { id }, add: true);
+                    };
+                    side.Children.Add(b);
+                }
+            if (selectedAreas.Count > 0) AreasPanel(lv, s);
+        }
+
+        /// <summary>The picked framing areas' use: one choice for all, one undo step (<see cref="LoadSection.SetAreaUse"/>).</summary>
+        private void AreasPanel(Level lv, LoadSection s)
+        {
+            var areas = selectedAreas.Select(id => FramingAreas.Find(B, id).a).Where(a => a != null).ToList();
+            if (areas.Count == 0) return;
+            side.Children.Add(Head(areas.Count == 1 ? "Framing area " + AreaTitle(areas[0]) : $"{areas.Count} framing areas"));
+            if (areas.Count == 1) side.Children.Add(Para("Its loads: " + UseText(s, areas[0], true)));
+            else
+            {
+                foreach (var a in areas.Take(8)) side.Children.Add(Para($"• {AreaTitle(a)}: {UseText(s, a, true)}", true));
+                if (areas.Count > 8) side.Children.Add(Para($"… and {areas.Count - 8} more.", true));
+            }
+            var uses = s.Uses ?? new List<AreaUse>();
+            var combo = new ComboBox { Margin = new Thickness(0, 4, 0, 4) };
+            System.Windows.Automation.AutomationProperties.SetName(combo, "Area use");
+            string byName = areas.Count == 1
+                ? (string.IsNullOrWhiteSpace(areas[0].Name) ? "By its name (it has none: the level's loads)" : $"By its name, {areas[0].Name.Trim()} ({(s.Use(areas[0].Name) == null ? "no such use: the level's loads" : Loads(s.Use(areas[0].Name).Load, "psf"))})")
+                : "By each one's name";
+            combo.Items.Add(new ComboBoxItem { Content = byName, Tag = null });
+            combo.Items.Add(new ComboBoxItem { Content = "The level's loads: " + Loads(s.Level(lv.Id), "psf"), Tag = LoadSection.LevelsLoads });
+            foreach (var u in uses.Where(u => !string.IsNullOrWhiteSpace(u.Name)))
+                combo.Items.Add(new ComboBoxItem { Content = $"{u.Name.Trim()}: {Loads(u.Load, "psf")}", Tag = u.Name.Trim() });
+            // the choice they share, if they do
+            var now = areas.Select(a => s.AreaUses != null && s.AreaUses.TryGetValue(a.Id, out var v) ? v : null).Distinct().ToList();
+            if (now.Count == 1)
+                combo.SelectedItem = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag == null && now[0] == null) ||
+                    (i.Tag is string t && now[0] != null && string.Equals(t, now[0].Trim(), StringComparison.OrdinalIgnoreCase)));
+            combo.SelectionChanged += (o, e) =>
+            {
+                if (!(combo.SelectedItem is ComboBoxItem item)) return;
+                var ids = areas.Select(a => a.Id).ToList();
+                string what = (ids.Count == 1 ? AreaTitle(areas[0]) : $"{ids.Count} framing areas") + ": " +
+                              (item.Tag == null ? "loads by " + (ids.Count == 1 ? "its name" : "their names") : item.Tag as string == LoadSection.LevelsLoads ? "the level's loads" : "the " + item.Tag + " use") + ".";
+                if (!Edit(what, b => LoadSection.SetAreaUse(b, ids, item.Tag as string)) && !viewOnly) Say("No change.");
+            };
+            side.Children.Add(new TextBlock { Text = areas.Count == 1 ? "Its use" : "Their use", Margin = new Thickness(0, 4, 0, 0) });
+            side.Children.Add(combo);
+            if (uses.Count == 0) side.Children.Add(Para("No uses yet: add them in Floor and roof loads… (a hallway, a balcony, with their loads), then name the areas in the Building Model or pick the use here.", true));
         }
 
         private void ZoneEditor(List<LoadZone> zones, int i)

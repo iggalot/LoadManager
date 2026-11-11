@@ -452,6 +452,38 @@ namespace LoadManager.Tests
         /// A corridor zone along the S wall, y 0 to 3 over the whole length, L 100 (D 15): the S wall's strip y 0 to 6 is half in it,
         /// L 3 × 100 + 3 × 40 = 420; the interior wall's strip (y 6 to 16) does not reach it: L 400, no zone.
         /// </summary>
+        /// <summary>
+        /// An area use (owner 2026-11-10): the floor's part from the S wall to the interior wall (y 0 to 12, joists S-N) is its
+        /// own framing area named Corridor, and the Corridor use is L 100. By hand: the S wall's strip, 6 ft of corridor:
+        /// L 600; the interior wall, 6 ft of corridor and 4 ft of the floor north of it (L 40): 600 + 160 = 760. The north
+        /// wall keeps the level's 4 × 40. Picked "the level's loads", the corridor goes back to 6 × 40 = 240; picked back to
+        /// "by its name", 600 again. Another use picked by hand wins over its name.
+        /// </summary>
+        [TestMethod]
+        public void AreaUse_ByTheAreasName_ThenPickedByHand()
+        {
+            var b = OneStory(out var l2, out var s, out var i, out var n, out _);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 15, Live = 40 });
+            var d = b.Diaphragms.Single();
+            var placed = FramingAreas.Place(b, d, new Rect2(0, 0, 30, 12), SpanDirection.SouthNorth);
+            Assert.AreEqual(1, placed.Count);
+            Assert.IsTrue(FramingAreas.SetName(b, placed, "Corridor"));
+            Assert.IsTrue(LoadSection.SetUses(b, new[] { new AreaUse { Name = "corridor", Load = new AreaLoad { Dead = 15, Live = 100 } },
+                                                          new AreaUse { Name = "Storage", Load = new AreaLoad { Dead = 15, Live = 125 } } }));
+            double Live(Wall w) => GravityLoadPath.Run(b, LoadSection.Read(b))[GravityLoadPath.Key(w.Id, l2.Id)].Load.Live;
+            Assert.AreEqual(600, Live(s), Tol, "the corridor's L 100 over the S wall's 6 ft (the use found by the area's name, any case)");
+            Assert.AreEqual(760, Live(i), Tol);
+            Assert.AreEqual(160, Live(n), Tol, "the level's own");
+
+            Assert.IsTrue(LoadSection.SetAreaUse(b, placed, LoadSection.LevelsLoads));
+            Assert.AreEqual(240, Live(s), Tol, "picked: the level's loads, over its name");
+            Assert.IsTrue(LoadSection.SetAreaUse(b, placed, "Storage"));
+            Assert.AreEqual(750, Live(s), Tol, "picked: Storage, L 125 × 6");
+            Assert.IsTrue(LoadSection.SetAreaUse(b, placed, null));
+            Assert.AreEqual(600, Live(s), Tol, "back to the use its name gives");
+            Assert.IsFalse(LoadSection.SetAreaUse(b, placed, null), "nothing changed");
+        }
+
         [TestMethod]
         public void Zone_PartOfTheStrip()
         {

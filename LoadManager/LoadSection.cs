@@ -114,6 +114,19 @@ namespace LoadManager
     }
 
     /// <summary>
+    /// An area use (owner 2026-11-10): the area loads of a kind of part of a floor or roof (a balcony, a corridor, a bath),
+    /// set once and given to every framing area of that use. A framing area takes the use named as it is (its name in the
+    /// Building Model), or the one picked for it here, else its level's loads: nothing to set for the ordinary floor.
+    /// </summary>
+    [DataContract]
+    public sealed class AreaUse
+    {
+        [DataMember(Order = 1)] public string Name { get; set; }
+        [DataMember(Order = 2)] public AreaLoad Load { get; set; } = new AreaLoad();
+        public override string ToString() => $"{Name}: {Load} psf";
+    }
+
+    /// <summary>
     /// The load manager's section of the project file (the building's "Loads" data), as the wind app keeps its "Wind"
     /// section: the loads are the project's, not the building model's. The building model only carries the section;
     /// the IDs in it are the model's (walls, levels), so loads stay on their objects.
@@ -138,10 +151,44 @@ namespace LoadManager
         /// <summary>Load zones: parts of a level with their own area loads (a deck, a corridor, a storage room).</summary>
         [DataMember(Order = 4, EmitDefaultValue = false)] public List<LoadZone> Zones { get; set; }
 
+        /// <summary>The area uses (a balcony, a corridor): each one's loads, given to the framing areas of that use.</summary>
+        [DataMember(Order = 5, EmitDefaultValue = false)] public List<AreaUse> Uses { get; set; }
+
+        /// <summary>
+        /// Framing area ID → the use picked for it here, over the one its name gives (<see cref="LevelsLoads"/>: the level's
+        /// loads, even where its name is a use's).
+        /// </summary>
+        [DataMember(Order = 6, EmitDefaultValue = false)] public Dictionary<string, string> AreaUses { get; set; }
+
+        /// <summary>An area's use picked as "the level's loads" (<see cref="AreaUses"/>).</summary>
+        public const string LevelsLoads = "";
+
         /// <summary>The zones on a level.</summary>
         public IEnumerable<LoadZone> ZonesOn(string levelId) => (Zones ?? new List<LoadZone>()).Where(z => z.LevelId == levelId && z.IsValid);
 
-        public bool IsEmpty => (WallTops == null || WallTops.Count == 0) && (Levels == null || Levels.Count == 0) && !(WallDead > 0) && (Zones == null || Zones.Count == 0);
+        /// <summary>The use with this name (any case), or null.</summary>
+        public AreaUse Use(string name) =>
+            string.IsNullOrWhiteSpace(name) ? null : (Uses ?? new List<AreaUse>()).FirstOrDefault(u => string.Equals(u.Name?.Trim(), name.Trim(), System.StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// A framing area's use: the one picked for it here, else the one its name gives, else null (the level's loads).
+        /// <paramref name="picked"/>: whether it was picked here (not from its name).
+        /// </summary>
+        public AreaUse UseOf(FramingArea a, out bool picked)
+        {
+            picked = false;
+            if (a == null) return null;
+            if (AreaUses != null && AreaUses.TryGetValue(a.Id, out var name)) { picked = true; return Use(name); }
+            return Use(a.Name);
+        }
+
+        public AreaUse UseOf(FramingArea a) => UseOf(a, out _);
+
+        /// <summary>The area loads on a framing area of a level: its use's, else the level's (null: none entered).</summary>
+        public AreaLoad LoadOn(FramingArea a, string levelId) => UseOf(a)?.Load ?? Level(levelId);
+
+        public bool IsEmpty => (WallTops == null || WallTops.Count == 0) && (Levels == null || Levels.Count == 0) && !(WallDead > 0) && (Zones == null || Zones.Count == 0)
+                               && (Uses == null || Uses.Count == 0) && (AreaUses == null || AreaUses.Count == 0);
 
         /// <summary>The loads entered on a wall's top on the story under <paramref name="topLevelId"/>, or null (none entered).</summary>
         public LineLoad WallTop(string wallId, string topLevelId) =>
@@ -253,6 +300,55 @@ namespace LoadManager
             var now = s.Zones ?? new List<LoadZone>();
             if (now.Count == next.Count && now.Zip(next, (x, y) => x.SameAs(y)).All(t => t)) return false;
             s.Zones = next.Count == 0 ? null : next;
+            s.Write(b);
+            return true;
+        }
+
+        /// <summary>
+        /// Sets every area use at once (one edit): blank names left out, a name used twice kept once (the first), negative loads
+        /// taken as 0. A use renamed or taken away leaves its areas on the level's loads (or the use their name gives). False
+        /// when nothing changed.
+        /// </summary>
+        public static bool SetUses(Building b, IEnumerable<AreaUse> uses)
+        {
+            if (b == null) return false;
+            var next = new List<AreaUse>();
+            foreach (var u in uses ?? Enumerable.Empty<AreaUse>())
+            {
+                if (u == null || string.IsNullOrWhiteSpace(u.Name)) continue;
+                string n = u.Name.Trim();
+                if (next.Any(x => string.Equals(x.Name, n, System.StringComparison.OrdinalIgnoreCase))) continue;
+                next.Add(new AreaUse { Name = n, Load = new AreaLoad { Dead = P(u.Load?.Dead ?? 0), Live = P(u.Load?.Live ?? 0), RoofLive = P(u.Load?.RoofLive ?? 0), Snow = P(u.Load?.Snow ?? 0) } });
+            }
+            var s = Read(b);
+            var now = s.Uses ?? new List<AreaUse>();
+            if (now.Count == next.Count && now.Zip(next, (x, y) => x.Name == y.Name && (x.Load ?? new AreaLoad()).SameAs(y.Load)).All(t => t)) return false;
+            s.Uses = next.Count == 0 ? null : next;
+            s.Write(b);
+            return true;
+        }
+
+        /// <summary>
+        /// Gives framing areas a use (one edit): <paramref name="use"/> a use's name, <see cref="LevelsLoads"/> the level's
+        /// loads, or null: back to the use their name gives. False when nothing changed.
+        /// </summary>
+        public static bool SetAreaUse(Building b, IEnumerable<string> areaIds, string use)
+        {
+            if (b == null) return false;
+            var s = Read(b);
+            var map = s.AreaUses ?? new Dictionary<string, string>();
+            bool changed = false;
+            foreach (var id in areaIds ?? Enumerable.Empty<string>())
+            {
+                if (FramingAreas.Find(b, id).a == null) continue;
+                if (use == null) { changed |= map.Remove(id); continue; }
+                string v = use.Trim();
+                if (map.TryGetValue(id, out var was) && was == v) continue;
+                map[id] = v;
+                changed = true;
+            }
+            if (!changed) return false;
+            s.AreaUses = map.Count == 0 ? null : map;
             s.Write(b);
             return true;
         }

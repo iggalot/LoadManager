@@ -80,6 +80,31 @@ namespace LoadManager.Wpf
             wall.Children.Add(new TextBlock { Text = "carried down to the wall or footing under each wall", Foreground = Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) });
             root.Children.Add(wall);
 
+            // area uses: the loads of a kind of part (owner 2026-11-10), given to the framing areas of that use
+            root.Children.Add(new TextBlock { Text = "Area uses", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 2) });
+            root.Children.Add(new TextBlock
+            {
+                Text = "The loads of a kind of part of a floor or roof: a balcony, a corridor, a bath. A framing area named like a use (its name in the Building Model) takes its loads, " +
+                       "however many there are; click framing areas on the plan to give them another. Every other area takes its level's loads above.",
+                TextWrapping = TextWrapping.Wrap, MaxWidth = 760, Foreground = Muted, Margin = new Thickness(0, 0, 0, 4),
+            });
+            areaCount = name => b.Diaphragms.SelectMany(d => d.Framing ?? new List<FramingArea>()).Count(a => string.Equals(s.UseOf(a)?.Name, name, StringComparison.OrdinalIgnoreCase));
+            useRows = new StackPanel();
+            useRows.Children.Add(UseRow(null, header: true));
+            foreach (var u in s.Uses ?? new List<AreaUse>()) useRows.Children.Add(UseRow(u));
+            root.Children.Add(useRows);
+            var addUse = new Button { Content = "Add use", Padding = new Thickness(10, 2, 10, 2), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
+            // a name the areas have that no use has yet: offered first
+            var unmatched = b.Diaphragms.SelectMany(d => d.Framing ?? new List<FramingArea>()).Select(a => a.Name).Where(n => !string.IsNullOrWhiteSpace(n))
+                             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            addUse.Click += (o, e) =>
+            {
+                var have = useRows.Children.OfType<Grid>().Where(r => r.Tag != null).Select(r => (((TextBox, TextBox[]))r.Tag).Item1.Text.Trim()).ToList();
+                string next = unmatched.FirstOrDefault(n => !have.Any(h => string.Equals(h, n, StringComparison.OrdinalIgnoreCase))) ?? $"Use {useRows.Children.Count}";
+                useRows.Children.Add(UseRow(new AreaUse { Name = next }));
+            };
+            root.Children.Add(addUse);
+
             // load zones: parts of a level with their own loads
             root.Children.Add(new TextBlock { Text = "Load zones", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 2) });
             root.Children.Add(new TextBlock
@@ -106,7 +131,7 @@ namespace LoadManager.Wpf
             root.Children.Add(new TextBlock
             {
                 Text = "Live loads: IBC Table 1607.1. Snow: ASCE 7-22 Chapter 7 (the roof snow load on the plan). Roof dead load on the plan: a sloped roof's dead load along the slope divided by cos(slope). " +
-                       "The framing's span is the building model's (each diaphragm's, Auto: its shorter way; a sloped roof's rafters run across the ridge).",
+                       "The framing is the building model's: each framing area its own way and its own name (a sloped roof's rafters run across the ridge).",
                 TextWrapping = TextWrapping.Wrap, MaxWidth = 640, Foreground = Muted, FontSize = 11, Margin = new Thickness(0, 10, 0, 0),
             });
 
@@ -136,6 +161,47 @@ namespace LoadManager.Wpf
             Walk(root);
             close.Content = "Close";
             close.IsDefault = true;
+        }
+
+        /// <summary>The area uses entered (when OK).</summary>
+        public List<AreaUse> Uses { get; } = new List<AreaUse>();
+
+        private readonly StackPanel useRows;
+        private readonly Func<string, int> areaCount;
+        private static readonly double[] UseWidths = { 160, 56, 56, 56, 56, 150, 70 };
+
+        /// <summary>One use's row (its controls kept in the row's Tag), or the header.</summary>
+        private Grid UseRow(AreaUse u, bool header = false)
+        {
+            var g = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+            foreach (var w in UseWidths) g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(w) });
+            void Put(UIElement e, int c) { Grid.SetColumn(e, c); g.Children.Add(e); }
+            if (header)
+            {
+                string[] heads = { "Name", "D", "L", "Lr", "S", "Framing areas", "" };
+                for (int c = 0; c < heads.Length; c++) Put(new TextBlock { Text = heads[c], FontWeight = FontWeights.SemiBold }, c);
+                return g;
+            }
+            int k = useRows.Children.Count;     // 1 for the first use (the header is 0)
+            var name = new TextBox { Text = u?.Name ?? "", Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+            var nums = new[] { u?.Load?.Dead ?? 0, u?.Load?.Live ?? 0, u?.Load?.RoofLive ?? 0, u?.Load?.Snow ?? 0 }
+                .Select(v => new TextBox { Text = v.ToString("0.##", CultureInfo.InvariantCulture), Width = 48, Margin = new Thickness(0, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center }).ToArray();
+            string[] names = { "D", "L", "Lr", "S" };
+            AutomationProperties.SetName(name, $"Use {k} name");
+            for (int c = 0; c < nums.Length; c++) AutomationProperties.SetName(nums[c], $"Use {k} {names[c]}");
+            var count = new TextBlock { Foreground = Muted, VerticalAlignment = VerticalAlignment.Center };
+            void Count() { int n = areaCount(name.Text.Trim()); count.Text = n == 0 ? "none yet" : n == 1 ? "1 area" : $"{n} areas"; }
+            Count();
+            name.TextChanged += (o, e) => Count();
+            var remove = new Button { Content = "Remove", Padding = new Thickness(6, 0, 6, 0), VerticalAlignment = VerticalAlignment.Center };
+            AutomationProperties.SetName(remove, $"Use {k} remove");
+            remove.Click += (o, e) => useRows.Children.Remove(g);
+            Put(name, 0);
+            for (int c = 0; c < nums.Length; c++) Put(nums[c], 1 + c);
+            Put(count, 5);
+            Put(remove, 6);
+            g.Tag = (name, nums);
+            return g;
         }
 
         private readonly List<Level> levelsDown;
@@ -225,7 +291,22 @@ namespace LoadManager.Wpf
                         Load = new AreaLoad { Dead = v[4].Value, Live = v[5].Value, RoofLive = v[6].Value, Snow = v[7].Value },
                     });
             }
+            // the uses: a name, and every load not below 0
+            var uses = new List<AreaUse>();
+            foreach (var row in useRows.Children.OfType<Grid>().Where(r => r.Tag != null))
+            {
+                var (name, nums) = ((TextBox, TextBox[]))row.Tag;
+                bool named = !string.IsNullOrWhiteSpace(name.Text);
+                name.Background = named ? Brushes.White : Bad;
+                good &= named;
+                var v = nums.Select(Value).ToArray();
+                for (int c = 0; c < nums.Length; c++) { nums[c].Background = v[c] != null ? Brushes.White : Bad; good &= v[c] != null; }
+                if (named && v.All(x => x != null))
+                    uses.Add(new AreaUse { Name = name.Text.Trim(), Load = new AreaLoad { Dead = v[0].Value, Live = v[1].Value, RoofLive = v[2].Value, Snow = v[3].Value } });
+            }
             if (!good) return;
+            Uses.Clear();
+            Uses.AddRange(uses);
             Zones.Clear();
             Zones.AddRange(zones);
             Levels.Clear();
@@ -247,7 +328,7 @@ namespace LoadManager.Wpf
             // the framing areas: each its own way (a part turned is its own area)
             var areas = ds.SelectMany(d => d.Framing ?? new List<FramingArea>()).ToList();
             var spans = areas.Select(a => Dir(a.Span)).Distinct().ToList();
-            string parts = areas.Count > 1 ? $" ({areas.Count} framing areas: {string.Join(", ", areas.Select(a => a.Id + " " + Dir(a.Span)))})" : "";
+            string parts = areas.Count > 1 ? $" ({areas.Count} framing areas: {string.Join(", ", areas.Select(a => a.Id + (string.IsNullOrEmpty(a.Name) ? "" : " " + a.Name) + " " + Dir(a.Span)))})" : "";
             return $"{(isRoof ? "Roof" : "Floor")}: {(isRoof ? "rafters" : "joists")} span {string.Join(" and ", spans)}{parts}";
         }
     }

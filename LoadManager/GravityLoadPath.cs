@@ -280,6 +280,8 @@ namespace LoadManager
                 WallDead = s.WallDead,
                 Levels = s.Levels?.ToDictionary(k => k.Key, k => new AreaLoad { Dead = k.Value?.Dead ?? 0 }),
                 Zones = s.Zones?.Select(z => new LoadZone { LevelId = z.LevelId, Name = z.Name, X0 = z.X0, Y0 = z.Y0, X1 = z.X1, Y1 = z.Y1, Load = new AreaLoad { Dead = z.Load?.Dead ?? 0 } }).ToList(),
+                Uses = s.Uses?.Select(u => new AreaUse { Name = u.Name, Load = new AreaLoad { Dead = u.Load?.Dead ?? 0 } }).ToList(),
+                AreaUses = s.AreaUses == null ? null : new Dictionary<string, string>(s.AreaUses),
                 WallTops = s.WallTops?.ToDictionary(k => k.Key, k => k.Value?.ToDictionary(v => v.Key, v => DeadOnly(v.Value))),
             };
             return Walk(b, dead, wind ?? new RoofWindCase { Name = "no wind", PressureAt = (x, y) => 0 });
@@ -389,7 +391,9 @@ namespace LoadManager
                     return false;
                 }
                 // every bearing line's share of the floor or roof, beams and walls (used in (b) and (c))
-                var shares = Tributaries(lines.Where(l => l.Dir != WallDirection.NotOrthogonal).ToList(), plates, area, zones, Most, Carries);
+                // each framing area its use's loads (a balcony, a corridor), else the level's; a zone over it still wins (owner 2026-11-10)
+                AreaLoad AreaOf(Plate pl) => pl.Area == null ? area : s.LoadOn(pl.Area, lv.Id) ?? new AreaLoad();
+                var shares = Tributaries(lines.Where(l => l.Dir != WallDirection.NotOrthogonal).ToList(), plates, AreaOf, zones, Most, Carries);
                 var fixedPoints = new Dictionary<string, List<ConcentratedLoad>>();
                 foreach (var m in order)
                 {
@@ -717,6 +721,8 @@ namespace LoadManager
             /// <summary>Its joists' or rafters' spacing (ft): a beam running along them carries half of it each side.</summary>
             public double Spacing;
             /// <summary>The wind on it (the roof, in the uplift pass), else null.</summary>
+            /// <summary>The framing area it is (null: a sloped roof, framed across its ridge): its use's loads, else the level's.</summary>
+            public FramingArea Area;
             public RoofWindCase Wind;
         }
 
@@ -748,7 +754,7 @@ namespace LoadManager
                     double mx = (r.X0 + r.X1) / 2, my = (r.Y0 + r.Y1) / 2, e = 1e-3;
                     var grown = o <= 0 ? r : new Rect2(Out(r.X0 - e, my) ? r.X0 - o : r.X0, Out(mx, r.Y0 - e) ? r.Y0 - o : r.Y0,
                                                        Out(r.X1 + e, my) ? r.X1 + o : r.X1, Out(mx, r.Y1 + e) ? r.Y1 + o : r.Y1);
-                    list.Add(new Plate { Region = Region.Of(new[] { grown }).Minus(holes), Span = a.Span, Overhang = o, Wind = isRoof ? wind : null,
+                    list.Add(new Plate { Region = Region.Of(new[] { grown }).Minus(holes), Span = a.Span, Overhang = o, Wind = isRoof ? wind : null, Area = a,
                                          Spacing = (isRoof ? b.Defaults?.RafterSpacing ?? 0 : b.Defaults?.FloorJoistSpacing ?? 0) / 12 });
                 }
             }
@@ -765,9 +771,9 @@ namespace LoadManager
         /// carries (<paramref name="carries"/>): a girder takes nothing off the beams framing into it (owner 2026-11-10).
         /// </remarks>
         private static Dictionary<Line, (double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile)> Tributaries(
-            List<Line> lines, List<Plate> plates, AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, Func<Line, Line, bool> carries)
+            List<Line> lines, List<Plate> plates, Func<Plate, AreaLoad> areaOf, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, Func<Line, Line, bool> carries)
         {
-            var per = lines.ToDictionary(l => l, l => new List<(Plate p, double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile)>());
+            var per = lines.ToDictionary(l => l, l => new List<(Plate p, double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile, LoadProfile widths)>());
             var taken = new Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>>();
             var takenZones = new Dictionary<(Line, Plate), List<string>>();
             foreach (var p in plates)
@@ -776,32 +782,49 @@ namespace LoadManager
                 foreach (var x in strips) { taken[(x.m, p)] = new List<(double, double, double, PointLoad)>(); takenZones[(x.m, p)] = new List<string>(); }
                 foreach (var w in lines.Where(w => Across(w, p)))
                 {
-                    var (lo, hi, edge, load, z, span) = Tributary(w, p, lines, strips, carries, taken, takenZones, area, zones, pick, out var one);
-                    per[w].Add((p, lo, hi, edge, load, z, span, one));
+                    var (lo, hi, edge, load, z, span) = Tributary(w, p, lines, strips, carries, taken, takenZones, areaOf(p), zones, pick, out var one, out var wide);
+                    per[w].Add((p, lo, hi, edge, load, z, span, one, wide));
                 }
             }
             foreach (var p in plates)
                 foreach (var x in AlongStrips(p, lines))
                 {
-                    var (lo, hi, load) = AlongStrip(x.m, p, x.a, x.b, taken[(x.m, p)], pick, out var one);
-                    per[x.m].Add((p, lo, hi, 0, load, takenZones[(x.m, p)], 0, one));
+                    var (lo, hi, load) = AlongStrip(x.m, p, x.a, x.b, taken[(x.m, p)], pick, out var one, out var wide);
+                    per[x.m].Add((p, lo, hi, 0, load, takenZones[(x.m, p)], 0, one, wide));
                 }
             var result = new Dictionary<Line, (double, double, double, LineLoad, List<string>, double, LoadProfile)>();
             foreach (var kv in per)
             {
-                var profile = new LoadProfile();
-                double tMin = double.MaxValue, tMax = 0, edgeMax = 0, spanMax = 0;
-                LineLoad most = null;
+                // the plates on a line add where they meet it at the same place (a wall between two framing areas carries
+                // both sides); along it, the most is taken
+                var parts = kv.Value.Where(t => t.hi > 0).ToList();
+                double edgeMax = 0, spanMax = 0;
                 var met = new List<string>();
-                foreach (var t in kv.Value)
+                foreach (var t in parts)
                 {
-                    if (t.hi <= 0) continue;
-                    tMin = Math.Min(tMin, t.lo); tMax = Math.Max(tMax, t.hi); edgeMax = Math.Max(edgeMax, t.edge - t.p.Overhang); spanMax = Math.Max(spanMax, t.span);
-                    most = pick(most, t.load);
-                    profile = profile.Combine(t.profile, pick);
+                    edgeMax = Math.Max(edgeMax, t.edge - t.p.Overhang); spanMax = Math.Max(spanMax, t.span);
                     met.AddRange(t.zones.Where(x => !met.Contains(x)));
                 }
-                result[kv.Key] = (tMax > 0 ? tMin : 0, tMax, edgeMax, most ?? new LineLoad(), met, spanMax, profile);
+                if (parts.Count == 0) { result[kv.Key] = (0, 0, 0, new LineLoad(), met, 0, new LoadProfile()); continue; }
+                LoadProfile profile, widths;
+                LineLoad most = null;
+                double tMin, tMax;
+                if (parts.All(t => !t.profile.IsEmpty && !t.widths.IsEmpty))
+                {
+                    profile = parts.Skip(1).Aggregate(parts[0].profile, (sum, t) => sum.Plus(t.profile));
+                    widths = parts.Skip(1).Aggregate(parts[0].widths, (sum, t) => sum.Plus(t.widths));
+                    foreach (var st in profile.Steps) most = pick(most, st.Load);
+                    tMin = widths.Steps.Min(x => x.Load.Dead);
+                    tMax = widths.Steps.Max(x => x.Load.Dead);
+                }
+                else
+                {
+                    // no profile to add by place (a line of no length): the largest
+                    profile = new LoadProfile();
+                    foreach (var t in parts) { most = pick(most, t.load); profile = profile.Combine(t.profile, pick); }
+                    tMin = parts.Min(t => t.lo); tMax = parts.Max(t => t.hi);
+                }
+                result[kv.Key] = (tMin, tMax, edgeMax, most ?? new LineLoad(), met, spanMax, profile);
             }
             return result;
         }
@@ -846,10 +869,12 @@ namespace LoadManager
         private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all,
             List<(Line m, double c, double h, double a, double b)> strips, Func<Line, Line, bool> carries,
             Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>> taken, Dictionary<(Line, Plate), List<string>> takenZones,
-            AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
+            AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile, out LoadProfile widths)
         {
             profile = new LoadProfile();
+            widths = new LoadProfile();
             var steps = new List<ProfileStep>();
+            var wsteps = new List<ProfileStep>(); // the tributary width at each step (as Dead), added to the other plates' at the same place
             LineLoad most = null;
             var met = new List<string>();
             // joists running W-E bear on S-N lines, and the other way round
@@ -913,8 +938,10 @@ namespace LoadManager
                 }
                 most = pick(most, strip);
                 steps.Add(new ProfileStep { A = Math.Min(Math.Abs(s - half - st), Math.Abs(s + half - st)), B = Math.Max(Math.Abs(s - half - st), Math.Abs(s + half - st)), Load = strip });
+                wsteps.Add(new ProfileStep { A = steps[steps.Count - 1].A, B = steps[steps.Count - 1].B, Load = new LineLoad { Dead = t } });
             }
             profile = LoadProfile.Of(steps, pick);
+            widths = LoadProfile.Of(wsteps, LineLoad.Max);
             return any ? (lo, hi, edge, most ?? new LineLoad(), met, span) : (0, 0, 0, new LineLoad(), new List<string>(), 0);
         }
 
@@ -960,9 +987,11 @@ namespace LoadManager
         /// member it carries has it, spread step by step along it as found.
         /// </summary>
         private static (double lo, double hi, LineLoad load) AlongStrip(Line w, Plate p, double a0, double b0,
-            List<(double fa, double ga, double ov, PointLoad total)> got, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile)
+            List<(double fa, double ga, double ov, PointLoad total)> got, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile, out LoadProfile widths)
         {
             profile = new LoadProfile();
+            widths = new LoadProfile();
+            var wsteps = new List<ProfileStep>();
             bool alongX = p.Span == SpanDirection.WestEast;
             int n = Math.Max(1, (int)Math.Ceiling((b0 - a0) / Step));
             double d = (b0 - a0) / n, st = alongX ? w.Start.X : w.Start.Y;
@@ -989,8 +1018,10 @@ namespace LoadManager
                 most = pick(most, q);
                 double x0 = a0 + i * d, x1 = x0 + d;
                 steps.Add(new ProfileStep { A = Math.Min(Math.Abs(x0 - st), Math.Abs(x1 - st)), B = Math.Max(Math.Abs(x0 - st), Math.Abs(x1 - st)), Load = q });
+                wsteps.Add(new ProfileStep { A = steps[steps.Count - 1].A, B = steps[steps.Count - 1].B, Load = new LineLoad { Dead = width[i] } });
             }
             profile = LoadProfile.Of(steps, pick);
+            widths = LoadProfile.Of(wsteps, LineLoad.Max);
             double hi = width.Max();
             return (hi > 1e-9 ? width.Min() : 0, hi > 1e-9 ? hi : 0, most ?? new LineLoad());
         }
