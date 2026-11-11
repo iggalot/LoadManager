@@ -244,8 +244,11 @@ namespace LoadManager.Wpf
                 return $"Roof: {b.Roof.Shape.ToString().ToLowerInvariant()}, rafters span {(b.EffectiveRidge() == RidgeAxis.WestEast ? "S-N" : "W-E")} (across the ridge)";
             var ds = b.Diaphragms.Where(d => d.LevelId == lv.Id).ToList();
             if (ds.Count == 0) return (isRoof ? "Roof" : "Floor") + ": no diaphragm drawn (nothing to load)";
-            var spans = ds.Select(d => Dir(d.EffectiveSpan) + (d.Span == SpanDirection.Auto ? " (Auto)" : "")).Distinct().ToList();
-            return $"{(isRoof ? "Roof" : "Floor")}: {(isRoof ? "rafters" : "joists")} span {string.Join(", ", spans)}";
+            // the framing areas: each its own way (a part turned is its own area)
+            var areas = ds.SelectMany(d => d.Framing ?? new List<FramingArea>()).ToList();
+            var spans = areas.Select(a => Dir(a.Span)).Distinct().ToList();
+            string parts = areas.Count > 1 ? $" ({areas.Count} framing areas: {string.Join(", ", areas.Select(a => a.Id + " " + Dir(a.Span)))})" : "";
+            return $"{(isRoof ? "Roof" : "Floor")}: {(isRoof ? "rafters" : "joists")} span {string.Join(" and ", spans)}{parts}";
         }
     }
 }

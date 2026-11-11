@@ -144,8 +144,12 @@ namespace LoadManager.Tests
             Assert.AreEqual(0, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);
         }
 
+        /// <summary>
+        /// The joists S-N on the S wall only, nothing under their N ends: they cannot stand, so the model is not valid and
+        /// nothing is calculated (owner 2026-11-10: never all of it put on the one wall).
+        /// </summary>
         [TestMethod]
-        public void MissingSupport_AllToTheEdge_Noted()
+        public void MissingSupport_TheModelIsNotValid_NothingCalculated()
         {
             var b = Building.New("One");
             b.Roof.Overhang = 0;
@@ -153,9 +157,10 @@ namespace LoadManager.Tests
             b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
             var s = b.AddWall(b.Ground, l2, 0, 0, 30, 0);
             LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
-            var rs = GravityLoadPath.Run(b, LoadSection.Read(b))[GravityLoadPath.Key(s.Id, l2.Id)];
-            Assert.AreEqual(20, rs.TributaryMax, Tol);
-            Assert.AreEqual(1, rs.Notes.Count);
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.IsFalse(r.Calculated);
+            Assert.IsTrue(r.ModelErrors.Any(e => e.Code == "JoistNotHeldUp" && e.LevelId == l2.Id));
+            Assert.AreEqual(0, r.Count, "nothing calculated");
         }
 
         [TestMethod]
@@ -164,6 +169,8 @@ namespace LoadManager.Tests
             var b = OneStory(out var l2, out _, out _, out _, out _);
             var rf = b.AddLevel("Roof", 19);
             b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
+            foreach (var (x0, y0, x1, y1) in new[] { (0.0, 0.0, 30.0, 0.0), (0.0, 20.0, 30.0, 20.0), (0.0, 0.0, 0.0, 20.0), (30.0, 0.0, 30.0, 20.0) })
+                b.AddWall(l2, rf, x0, y0, x1, y1);                     // the roof's joists on the walls round it
             var odd = b.AddWall(l2, rf, 0, 8, 30, 8);                 // no wall under it at y = 8
             var r = GravityLoadPath.Run(b, LoadSection.Read(b));
             Assert.IsTrue(r.Notes.Any(x => x.StartsWith(odd.Id)));
@@ -339,6 +346,8 @@ namespace LoadManager.Tests
             b.AddDiaphragm(l2, new Rect2(0, 0, 30, 20));
             b.AddDiaphragm(rf, new Rect2(0, 0, 30, 20));
             var w1 = b.AddWall(b.Ground, l2, 0, 0, 0, 20);
+            b.AddWall(b.Ground, l2, 0, 0, 30, 0);                      // Level 2's joists S-N bear on the S and N walls
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);
             b.AddWall(l2, rf, 0, 0, 0, 20);
             b.AddWall(l2, rf, 30, 0, 30, 20);
             b.AddWall(l2, rf, 0, 0, 30, 0);
@@ -370,6 +379,7 @@ namespace LoadManager.Tests
             BuildingModel.Edits.BuildingEdits.SetDiaphragmSpan(b, d.Id, SpanDirection.WestEast);
             var sa = b.AddWall(b.Ground, l2, 0, 0, 15, 0);
             var sb = b.AddWall(b.Ground, l2, 15, 0, 30, 0);
+            b.AddWall(b.Ground, l2, 0, 20, 30, 20);                    // Level 2's joists S-N: their N ends
             b.AddWall(l2, rf, 0, 0, 30, 0);
             b.AddWall(l2, rf, 0, 20, 30, 20);
             b.AddWall(l2, rf, 0, 0, 0, 20);

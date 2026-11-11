@@ -735,10 +735,23 @@ namespace LoadManager
                 list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o, Wind = wind, Spacing = (b.Defaults?.RafterSpacing ?? 0) / 12 });
                 return list;
             }
+            // one plate per framing area (owner 2026-11-10): its joists run its way and end at its edges, so what lands on it goes to
+            // the walls and beams under it; a flat roof's eaves grow the areas' sides on the diaphragm's outline only
             var holes = b.OpeningsCutting(lv).SelectMany(x => x.Pieces).ToList();
             foreach (var d in b.Diaphragms.Where(d => d.LevelId == lv.Id && d.Pieces != null && d.Pieces.Count > 0))
-                list.Add(new Plate { Region = Region.Of(d.Pieces.Select(Grow)).Minus(holes), Span = d.EffectiveSpan, Overhang = o, Wind = isRoof ? wind : null,
-                                     Spacing = (isRoof ? b.Defaults?.RafterSpacing ?? 0 : b.Defaults?.FloorJoistSpacing ?? 0) / 12 });
+            {
+                var whole = Region.Of(d.Pieces);
+                bool Out(double x, double y) => !whole.Contains(x, y, 0);
+                foreach (var a in d.Framing ?? new List<FramingArea>())
+                {
+                    var r = a.Rect;
+                    double mx = (r.X0 + r.X1) / 2, my = (r.Y0 + r.Y1) / 2, e = 1e-3;
+                    var grown = o <= 0 ? r : new Rect2(Out(r.X0 - e, my) ? r.X0 - o : r.X0, Out(mx, r.Y0 - e) ? r.Y0 - o : r.Y0,
+                                                       Out(r.X1 + e, my) ? r.X1 + o : r.X1, Out(mx, r.Y1 + e) ? r.Y1 + o : r.Y1);
+                    list.Add(new Plate { Region = Region.Of(new[] { grown }).Minus(holes), Span = a.Span, Overhang = o, Wind = isRoof ? wind : null,
+                                         Spacing = (isRoof ? b.Defaults?.RafterSpacing ?? 0 : b.Defaults?.FloorJoistSpacing ?? 0) / 12 });
+                }
+            }
             return list;
         }
 
