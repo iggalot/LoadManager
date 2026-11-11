@@ -15,7 +15,11 @@
       framing) are solved together, going round until nothing changes (`SolveBeams`); a loop resting only on each
       other's ends is a mechanism, said so and not traced. The floors and flat roofs are framed by the model's framing areas (`Plates`: one plate per way the framing runs on a diaphragm, its joists running through the areas framed that way and ending where it turns; owner 2026-11-10/11); each area takes the loads of its **use** (`LoadSection.Uses`, `AreaUse`: a name and its D, L, Lr, S, entered once in Floor and roof loads): the one picked for it on the Loads plan (`AreaUses`, `SetAreaUse`: click the area, Shift+click several, one undo step), else the use named as the area is (its BM `Name`, any case), else the level's (`LoadOn`); each use loads its own part of the span, as a zone does (`Strip`); a load zone still wins inside it. Two plates meeting on a wall add their strips there, place by place (`LoadProfile.Plus`), never the larger, and a joist that cannot stand is the model's error `JoistNotHeldUp` (`BuildingModel.Statics.Joists`). A beam running along the joists or rafters carries half a
       spacing each side (`ModelDefaults.FloorJoistSpacing`, `RafterSpacing`), taken from the lines across the framing,
-      **never from a member it carries** (owner 2026-11-10: a girder takes nothing off its beams; `Tributaries`).
+      **never from a member it carries** (owner 2026-11-10: a girder takes nothing off its beams; `Tributaries`). So does a
+      wall along the framing (owner 2026-11-11: an edge wall takes its edge joist or rafter; `AlongStrips`). **No area load
+      is dropped:** a row with no line across it goes to the nearest line along (`Leftovers`), and each plate's area load is
+      checked against what its lines carry (`AreaCheck`, `Result.AreaChecks`, within 0.5%): one off is an error in the
+      side panel (`AreaAccountSide`), the issues (`AreaNotCarried`) and `GravityBalance` (the hub's Fails). `AreaAccountTests`.
     - `WindUplift` / `RoofWind`.
     - `LateralSection` (now in `BuildingModel.Core`, `BuildingModel.Model`; 2026-11-06): the shear walls' forces on the foundation and each point's connector, written by the Shear Wall Calculator. Every plan draws them on the Ground plan (the shared sketch).
     - The foundation tab shows the Ground plan (the lowest level), not Level 2.

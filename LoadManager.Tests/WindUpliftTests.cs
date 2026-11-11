@@ -224,8 +224,8 @@ namespace LoadManager.Tests
 
         /// <summary>
         /// The tie place by place along its wall (ROADMAP step 4): the C&amp;C −45 psf in a corner zone 6 ft from the west end,
-        /// −20 beyond; the MWFRS −35 everywhere. S wall, 6 ft of roof on it, D 15 → 90 plf. 0 to 6 ft: the C&amp;C, 0.6 × 90 −
-        /// 0.6 × 270 = −108 plf (the MWFRS there −72); 6 to 30 ft: the MWFRS, 0.6 × 90 − 0.6 × 210 = −72 (the C&amp;C −18). The
+        /// −20 beyond; the MWFRS −35 everywhere. S wall, 6 ft of roof on it, D 15 → 90 plf. 1 to 6 ft (the first foot is the W wall's edge rafter): the C&amp;C,
+        /// 0.6 × 90 − 0.6 × 270 = −108 plf (the MWFRS there −72); 6 to 29 ft: the MWFRS, 0.6 × 90 − 0.6 × 210 = −72 (the C&amp;C −18). The
         /// whole tie its worst, −108 (C&amp;C).
         /// </summary>
         [TestMethod]
@@ -238,13 +238,16 @@ namespace LoadManager.Tests
             var u = WindUplift.Run(b, LoadSection.Read(b), new[] { hi }, a => cc);
             var t = u.Ties[s.Id];
             Console.WriteLine(string.Join("\n", t.Along));
-            Assert.AreEqual(2, t.Along.Count, string.Join("; ", t.Along));
-            Assert.AreEqual(0, t.Along[0].A, Tol); Assert.AreEqual(6, t.Along[0].B, 0.01);
-            Assert.AreEqual("C&C", t.Along[0].Governs); Assert.AreEqual(-108, t.Along[0].Line.Net, Tol);
-            Assert.AreEqual(6, t.Along[1].A, 0.01); Assert.AreEqual(30, t.Along[1].B, Tol);
-            Assert.AreEqual("MWFRS", t.Along[1].Governs); Assert.AreEqual(-72, t.Along[1].Line.Net, Tol);
-            Assert.AreEqual("high", t.Along[1].Case.Name);
-            Assert.AreEqual(-216, t.Along[0].PerRafter(t.SpacingIn), Tol, "per rafter at 24 in");
+            // its first and last foot: the W and E walls' edge rafters (owner 2026-11-11), nothing on the S wall there
+            Assert.AreEqual(4, t.Along.Count, string.Join("; ", t.Along));
+            Assert.AreEqual(0, t.Along[0].A, Tol); Assert.AreEqual(1, t.Along[0].B, 0.01); Assert.AreEqual(0, t.Along[0].Line.Net, Tol);
+            Assert.AreEqual(29, t.Along[3].A, 0.01); Assert.AreEqual(30, t.Along[3].B, Tol); Assert.AreEqual(0, t.Along[3].Line.Net, Tol);
+            Assert.AreEqual(1, t.Along[1].A, 0.01); Assert.AreEqual(6, t.Along[1].B, 0.01);
+            Assert.AreEqual("C&C", t.Along[1].Governs); Assert.AreEqual(-108, t.Along[1].Line.Net, Tol);
+            Assert.AreEqual(6, t.Along[2].A, 0.01); Assert.AreEqual(29, t.Along[2].B, 0.01);
+            Assert.AreEqual("MWFRS", t.Along[2].Governs); Assert.AreEqual(-72, t.Along[2].Line.Net, Tol);
+            Assert.AreEqual("high", t.Along[2].Case.Name);
+            Assert.AreEqual(-216, t.Along[1].PerRafter(t.SpacingIn), Tol, "per rafter at 24 in");
             Assert.AreEqual("C&C", t.Governs); Assert.AreEqual(-108, t.Line.Net, Tol, "the whole tie: its worst place");
         }
 

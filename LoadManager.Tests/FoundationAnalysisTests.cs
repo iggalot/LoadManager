@@ -17,6 +17,9 @@ namespace LoadManager.Tests
     {
         private const double Tol = 1e-6;
 
+        /// <summary>The S wall's stretch past the end walls' edge rafters (its first and last foot carry only itself).</summary>
+        private static FoundationSegment Mid(System.Collections.Generic.IEnumerable<FoundationSegment> s) => s.Single(g => g.A < 15 && 15 < g.B);
+
         private static Building OneStory(out Wall s)
         {
             var b = Building.New("One");
@@ -35,8 +38,9 @@ namespace LoadManager.Tests
         }
 
         /// <summary>
-        /// Gravity only. ASD: the most is D + Lr = 190 + 120 = 310 plf, the least 0.6D (Eq. 7a with W set to zero), 114. Strength: 1.2D + 1.6Lr = 228 + 192 =
-        /// 420 (more than 1.4D = 266); the least 0.9D (Eq. 5a, W zero), 171. Combinations with L, W, E and so on are left out.
+        /// Gravity only. The W and E walls take their edge rafters (1 ft, owner 2026-11-11): the S wall's first and last foot carry
+        /// only its own weight, 100 plf. ASD: the most is D + Lr = 190 + 120 = 310 plf, the least 0.6D (Eq. 7a with W set to zero), 0.6 × 100
+        /// = 60 at its ends. Strength: 1.2D + 1.6Lr = 228 + 192 = 420 (more than 1.4D = 266); the least 0.9D (Eq. 5a, W zero), 90. Combinations with L, W, E and so on are left out.
         /// </summary>
         [TestMethod]
         public void Gravity_AsdAndStrength()
@@ -44,19 +48,21 @@ namespace LoadManager.Tests
             var b = OneStory(out var s);
             var asd = FoundationAnalysis.Run(b, LoadSection.Read(b), null, null, DesignMethod.Asd);
             var w = asd.Walls.Single(x => x.Id == s.Id);
-            Assert.AreEqual(1, w.Segments.Count);
-            Assert.AreEqual(190, w.Segments[0].Load.Dead, Tol);
-            Assert.AreEqual(120, w.Segments[0].Load.RoofLive, Tol);
+            Assert.AreEqual(3, w.Segments.Count, "the end walls take their edge rafters: the S wall's first and last foot carry only itself");
+            Assert.AreEqual(100, w.Segments[0].Load.Dead, Tol);
+            Assert.AreEqual(0, w.Segments[0].Load.RoofLive, Tol);
+            Assert.AreEqual(190, Mid(w.Segments).Load.Dead, Tol);
+            Assert.AreEqual(120, Mid(w.Segments).Load.RoofLive, Tol);
             Assert.AreEqual(310, w.Line.Max, Tol);
             Assert.AreEqual("D + Lr", w.Line.MaxBy.Name);
-            Assert.AreEqual(114, w.Line.Min, Tol);
+            Assert.AreEqual(60, w.Line.Min, Tol);                     // 0.6 × 100 at the ends
             Assert.IsFalse(asd.Combinations.Any(c => c.Has(LoadType.Wind) || c.Has(LoadType.Live)));
-            Assert.AreEqual(30 * 190, w.Total().Dead, Tol);
+            Assert.AreEqual(28 * 190 + 2 * 100, w.Total().Dead, Tol);
 
             var lrfd = FoundationAnalysis.Run(b, LoadSection.Read(b), null, null, DesignMethod.Strength);
             var u = lrfd.Walls.Single(x => x.Id == s.Id);
             Assert.AreEqual(420, u.Line.Max, Tol);
-            Assert.AreEqual(171, u.Line.Min, Tol);
+            Assert.AreEqual(90, u.Line.Min, Tol);                     // 0.9 × 100 at the ends
         }
 
         /// <summary>
@@ -70,7 +76,7 @@ namespace LoadManager.Tests
             var sec = LoadSection.Read(b);
             var up = WindUplift.Run(b, sec, new[] { new RoofWindCase { Name = "uniform", PressureAt = (x, y) => -30 } }, null);
             var asd = FoundationAnalysis.Run(b, sec, up, null, DesignMethod.Asd).Walls.Single(x => x.Id == s.Id);
-            Assert.AreEqual(-180, asd.Segments[0].Load.WindMin, Tol);
+            Assert.AreEqual(-180, Mid(asd.Segments).Load.WindMin, Tol);
             Assert.AreEqual(6, asd.Line.Min, Tol);
             Assert.AreEqual("0.6D + 0.6W", asd.Line.MinBy.Combination.Name);
             Assert.AreEqual("uniform", asd.Line.MinBy.Wind.Name);
@@ -148,7 +154,7 @@ namespace LoadManager.Tests
             CollectionAssert.AreEqual(roof.Select(c => c.Name).ToList(), r.WindCases.Select(c => c.Name).ToList());
             var seg = r.Walls.Single(x => x.Id == s.Id).Segments;
             var c1 = r.WindCases.Single(c => c.Name == "Case 1, from W, roof Case A, +GCpi");
-            Assert.IsTrue(seg.All(g => g.Load.Wind(c1.Name) < 0), "the roof lifts in that case");
+            Assert.IsTrue(seg.Where(g => g.B > 1 + 1e-6 && g.A < 29 - 1e-6).All(g => g.Load.Wind(c1.Name) < 0), "the roof lifts in that case (past the end walls' edge rafters)");
 
             // the cases run side by side give exactly what each gives on its own, in the calculator's order
             for (int i = 0; i < roof.Count; i++)
@@ -184,7 +190,7 @@ namespace LoadManager.Tests
             Assert.IsTrue(r.WindCases.All(w => w.Roof == 0 && w.RoofName == "A"), "the one wind's roof in both");
             Assert.AreEqual("A", LateralSection.WindOf("A (flexible)"));
             Assert.IsFalse(r.Notes.Any(n => n.Contains("not among the wind calculator's cases")), "both are the calculator's case A");
-            var seg = r.Walls.Single(x => x.Id == s.Id).Segments.Single();
+            var seg = Mid(r.Walls.Single(x => x.Id == s.Id).Segments);
             Assert.AreEqual(seg.Load.Wind("A (rigid)"), seg.Load.Wind("A (flexible)"), Tol, "the roof's wind the same in both");
         }
 
@@ -212,7 +218,7 @@ namespace LoadManager.Tests
             Assert.AreEqual(2 * withW + (r.Combinations.Count - withW), r.Cases.Count);
 
             var w0 = r.Walls.Single(x => x.Id == s.Id);
-            var seg = w0.Segments.Single();
+            var seg = Mid(w0.Segments);
             var a = r.WindCases.Single(w => w.Lateral == "A");
             var bb = r.WindCases.Single(w => w.Lateral == "B");
             Assert.AreEqual(-180, seg.Load.Wind(a.Name), Tol);

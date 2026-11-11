@@ -241,6 +241,14 @@ namespace LoadManager.App
             // the issues button: the errors and the warnings, as in every app (owner 2026-11-11)
             issuesButton.Sketch = sketch;
             var all = errors.Concat(BuildingModel.Checks.ModelChecks.Run(B).Where(i => i.Severity != BuildingModel.Checks.Severity.Error)).ToList();
+            // a floor or roof whose load is not all on its walls and beams (owner 2026-11-11: no area load dropped): an error here
+            if (loadPath != null)
+                all.AddRange(loadPath.AreaChecks.Where(x => !x.Ok).Select(x => new BuildingModel.Checks.ModelIssue
+                {
+                    Severity = BuildingModel.Checks.Severity.Error, Code = "AreaNotCarried", LevelId = x.LevelId,
+                    Ids = x.Diaphragm == null ? new List<string>() : new List<string> { x.Diaphragm },
+                    Message = $"{B.Level(x.LevelId)?.Name}: {x}. Draw the wall or beam that carries it.",
+                }));
             issuesButton.Show(all);
             // on the plan: the plan bar's Issues toggle, as in every plan; on by itself with an error (nothing is calculated)
             sketch.Issues = all;
@@ -258,6 +266,23 @@ namespace LoadManager.App
             side.Children.Add(list);
         }
 
+        /// <summary>
+        /// The level's account (owner 2026-11-11): its floor or roof, plate by plate, every square foot's load on a wall or beam,
+        /// once; one that is not is said in red (and is an error on the issues button).
+        /// </summary>
+        private void AreaAccountSide(Level lv)
+        {
+            if (loadPath == null) return;
+            foreach (var ac in loadPath.AreaChecks.Where(x => x.LevelId == lv.Id))
+            {
+                var t = Para(ac.Ok
+                    ? $"✓ {ac.Diaphragm ?? "The roof"} ({ac.Framing}): all {ac.Area:#,0} sq ft on its walls and beams (D {ac.Carried.Dead:#,0} of {ac.Applied.Dead:#,0} lb)."
+                    : $"● {ac}. Draw the wall or beam that carries it.", ac.Ok);
+                if (!ac.Ok) { t.Foreground = Ui.Error; t.FontWeight = FontWeights.SemiBold; }
+                side.Children.Add(t);
+            }
+        }
+
         private void LoadsSide()
         {
             var lv = sketch.ActiveLevel;
@@ -267,6 +292,7 @@ namespace LoadManager.App
             side.Children.Add(Head($"{lv.Name}, {(isRoof ? "roof" : "floor")} at {lv.Elevation:0.##} ft"));
             var a = s.Level(lv.Id);
             side.Children.Add(Para("Area loads: " + Loads(a, "psf") + $"; walls' own weight {s.WallDead:0.##} psf of wall."));
+            AreaAccountSide(lv);
             side.Children.Add(Link("Floor and roof loads…", "Every level's area loads, the uses, the zones and the walls' own weight", AreaLoads));
             FramingAreasSide(lv, s);
 

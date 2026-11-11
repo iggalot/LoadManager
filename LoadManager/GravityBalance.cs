@@ -32,6 +32,10 @@ namespace LoadManager
             if (b == null) return r;
             s = s ?? LoadSection.Read(b) ?? new LoadSection();
             path = path ?? GravityLoadPath.Run(b, s);
+            // every square foot of every floor and roof on a wall or beam, once (owner 2026-11-11: no area load dropped): a member
+            // can balance with a load left off it, so the floors' account is checked first
+            foreach (var ac in path.AreaChecks.Where(x => !x.Ok))
+                r.Problems.Add(new FoundationProblem { Id = ac.Diaphragm, Message = $"{b.Level(ac.LevelId)?.Name}: {ac}. Draw the wall or beam that carries it." });
             var ids = b.Walls.Select(w => w.Id).Concat(b.Beams.Select(m => m.Id)).Concat(b.Columns.Select(c => c.Id)).ToList();
             foreach (var id in ids)
             {

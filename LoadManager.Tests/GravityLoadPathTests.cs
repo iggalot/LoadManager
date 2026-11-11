@@ -43,7 +43,7 @@ namespace LoadManager.Tests
             Assert.AreEqual(10, r[GravityLoadPath.Key(i.Id, l2.Id)].TributaryMax, Tol);   // 6 + 4
             Assert.AreEqual(150, r[GravityLoadPath.Key(i.Id, l2.Id)].Load.Dead, Tol);
             Assert.AreEqual(80, r[GravityLoadPath.Key(n.Id, l2.Id)].Load.RoofLive, Tol);  // 4 × 20
-            Assert.AreEqual(0, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);       // along the framing
+            Assert.AreEqual(15, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);      // along the framing: the edge rafter, half of 24 in. (owner 2026-11-11)
             Assert.IsTrue(r.Values.All(x => x.Notes.Count == 0));
         }
 
@@ -65,7 +65,7 @@ namespace LoadManager.Tests
             BuildingModel.Edits.BuildingEdits.SetDiaphragmSpan(b, b.Diaphragms.Single().Id, SpanDirection.WestEast);
             LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
             var r = GravityLoadPath.Run(b, LoadSection.Read(b));
-            Assert.AreEqual(0, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Dead, Tol);
+            Assert.AreEqual(10, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Dead, Tol);      // along it now: the edge rafter, 1 ft × 10
             Assert.AreEqual(150, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);      // 30 / 2 × 10
         }
 
@@ -141,7 +141,13 @@ namespace LoadManager.Tests
             Assert.AreEqual(12, rs.TributaryMax, Tol);
             Assert.AreEqual(180, rs.Load.Dead, Tol);
             Assert.AreEqual(0, rs.Notes.Count);                        // the eave is no surprise
-            Assert.AreEqual(0, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);
+            // the W wall along the rafters: its edge rafter (1 ft) and the 2 ft rake eave beside it, 3 ft × 15 = 45 plf; the rake
+            // corners past its ends (2 × 2 ft each side) on its last foot: 4 sq ft more a foot there, 7 ft × 15 = 105; in all
+            // 15 × (3 × 20 + 2 × 4) = 1020 lb, none dropped (owner 2026-11-11)
+            var rw = r[GravityLoadPath.Key(w.Id, l2.Id)];
+            Assert.AreEqual(105, rw.Load.Dead, 1e-6);
+            Assert.AreEqual(1020, rw.FromLevelProfile.Total().Dead, 1e-6);
+            Assert.IsTrue(r.AreaChecks.All(x => x.Ok), string.Join("; ", r.AreaChecks));
         }
 
         /// <summary>
@@ -217,7 +223,10 @@ namespace LoadManager.Tests
             Assert.AreEqual(0, rb.Notes.Count);
         }
 
-        /// <summary>The same beam on the W and E walls: each wall gets its 1500 lb end as a concentrated load 10 ft along it.</summary>
+        /// <summary>
+        /// The same beam on the W and E walls: each wall gets its end as a concentrated load 10 ft along it. Each wall takes its edge
+        /// rafter (1 ft, owner 2026-11-11), so the beam carries 100 plf over 1 to 29 ft: 1400 lb each end.
+        /// </summary>
         [TestMethod]
         public void Beam_OnWalls_ConcentratedLoads()
         {
@@ -229,9 +238,9 @@ namespace LoadManager.Tests
             var pw = r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single();
             Assert.AreEqual(bm.Id, pw.From);
             Assert.AreEqual(10, pw.At, Tol);
-            Assert.AreEqual(1500, pw.Load.Dead, Tol);
-            Assert.AreEqual(0, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, Tol);     // the framing runs along it
-            Assert.AreEqual(1500, r[GravityLoadPath.Key(e.Id, l2.Id)].Points.Single().Load.Dead, Tol);
+            Assert.AreEqual(1400, pw.Load.Dead, 1e-6);                                   // 100 plf over 1 to 29 ft: the end walls take their edge rafters
+            Assert.AreEqual(10, r[GravityLoadPath.Key(w.Id, l2.Id)].Load.Dead, 1e-6);   // the framing runs along it: its edge rafter, 1 ft
+            Assert.AreEqual(1400, r[GravityLoadPath.Key(e.Id, l2.Id)].Points.Single().Load.Dead, 1e-6);
         }
 
         /// <summary>
@@ -303,10 +312,12 @@ namespace LoadManager.Tests
 
         /// <summary>
         /// A beam (y = 10, x 0 to 15) from the W wall into a girder (x = 15, y 0 to 20) on the S and N walls. D 10, the
-        /// framing S-N at 24 in. (Level 2 is the roof: the rafter spacing). The beam takes 10 ft, 100 plf over 15 ft, so 750 lb
-        /// each end: the girder takes nothing off the beam it carries (owner 2026-11-10: a girder is a primary member). It runs
-        /// along the framing, so it carries the strip 1 ft each side of it where the walls would have it: west of it outside
-        /// the beam's 5 to 15 ft (10 sq ft), all of the east side (20 sq ft): 300 lb. So 375 + 150 = 525 to each wall.
+        /// framing S-N at 24 in. (Level 2 is the roof: the rafter spacing). The beam takes 10 ft, 100 plf, but not over its
+        /// first foot: the W wall takes its edge rafter there (owner 2026-11-11). So 1400 lb with its resultant at 8 ft: 1400 × 8
+        /// / 15 = 746.67 at the girder, 653.33 at the wall; the girder takes nothing off the beam it carries (owner 2026-11-10: a
+        /// girder is a primary member). It runs along the framing, so it carries the strip 1 ft each side of it where the walls
+        /// would have it: west of it outside the beam's 5 to 15 ft (10 sq ft), all of the east side (20 sq ft): 300 lb. So
+        /// 373.33 + 150 = 523.33 to each wall.
         /// </summary>
         [TestMethod]
         public void Beam_IntoAGirder()
@@ -319,22 +330,22 @@ namespace LoadManager.Tests
             LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 10 });
             var r = GravityLoadPath.Run(b, LoadSection.Read(b));
             Assert.AreEqual(24, b.Defaults.RafterSpacing, Tol);
-            Assert.AreEqual(750, r.Beams[bm.Id].EndReaction.Dead, 1e-6, "the girder takes nothing off the beam");
+            Assert.AreEqual(1400.0 * 8 / 15, r.Beams[bm.Id].EndReaction.Dead, 1e-6, "the girder takes nothing off the beam");
             Assert.AreEqual(g.Id, r.Beams[bm.Id].EndOn);
             Assert.AreEqual(w.Id, r.Beams[bm.Id].StartOn);
             Assert.AreEqual(20, r.Beams[g.Id].FromLevel.Dead, 1e-6);      // its strip, 2 ft × 10 psf where the walls had it
             Assert.AreEqual(2, r.Beams[g.Id].TributaryMax, 1e-6);
             Assert.AreEqual(1, r.Beams[g.Id].TributaryMin, 1e-6, "beside the beam: the east side only");
             Assert.AreEqual(10, r.Beams[g.Id].Points.Single().At, Tol);
-            Assert.AreEqual(525, r.Beams[g.Id].StartReaction.Dead, 1e-6);
+            Assert.AreEqual(1400.0 * 4 / 15 + 150, r.Beams[g.Id].StartReaction.Dead, 1e-6);
             var ps = r[GravityLoadPath.Key(s.Id, l2.Id)].Points.Single();
             Assert.AreEqual(g.Id, ps.From);
             Assert.AreEqual(15, ps.At, Tol);
-            Assert.AreEqual(525, ps.Load.Dead, 1e-6);
-            Assert.AreEqual(750, r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single().Load.Dead, 1e-6);
+            Assert.AreEqual(1400.0 * 4 / 15 + 150, ps.Load.Dead, 1e-6);
+            Assert.AreEqual(1400.0 * 7 / 15, r[GravityLoadPath.Key(w.Id, l2.Id)].Points.Single().Load.Dead, 1e-6);
         }
 
-        /// <summary>A roof beam's 1500 lb end on the W wall upstairs comes down to the W wall under it, at the same place.</summary>
+        /// <summary>A roof beam's 1400 lb end (100 plf over 28 ft: the end walls take their edge rafters) on the W wall upstairs comes down to the W wall under it, at the same place.</summary>
         [TestMethod]
         public void ConcentratedLoad_ComesDownTheWallUnder()
         {
@@ -358,13 +369,14 @@ namespace LoadManager.Tests
             var p = r[GravityLoadPath.Key(w1.Id, l2.Id)].Points.Single();
             Assert.IsTrue(p.From.StartsWith(bm.Id + " via "));
             Assert.AreEqual(10, p.At, Tol);
-            Assert.AreEqual(1500, p.Load.Dead, Tol);
+            Assert.AreEqual(1400, p.Load.Dead, 1e-6);  // the upper W and E walls take their edge rafters: 100 plf over 28 ft
         }
 
         /// <summary>
         /// The roof framing spans W-E onto the upper W and E walls and a roof beam at x = 15 (S-N, on the upper S and N walls):
-        /// the beam takes 15 ft, D 10 → 150 plf over 20 ft, 1500 lb each end. Under the upper S wall are two walls meeting at
-        /// x = 15: the 1500 lb goes to one of them, not both.
+        /// the beam takes 15 ft, D 10 → 150 plf; the upper S and N walls take their edge rafters (1 ft each, owner 2026-11-11), so it
+        /// carries it over 1 to 19 ft: 1350 lb each end. Under the upper S wall are two walls meeting at
+        /// x = 15: the 1350 lb goes to one of them, not both.
         /// </summary>
         [TestMethod]
         public void ConcentratedLoad_AtAJointBelow_GoesToOneWall()
@@ -387,10 +399,10 @@ namespace LoadManager.Tests
             var bm = b.AddBeam(rf, 15, 0, 15, 20);
             LoadSection.SetLevel(b, rf.Id, new AreaLoad { Dead = 10 });
             var r = GravityLoadPath.Run(b, LoadSection.Read(b));
-            Assert.AreEqual(1500, r.Beams[bm.Id].StartReaction.Dead, Tol);
+            Assert.AreEqual(1350, r.Beams[bm.Id].StartReaction.Dead, 1e-6);  // the S and N walls take their edge rafters: 150 plf over 18 ft
             var below = r[GravityLoadPath.Key(sa.Id, l2.Id)].Points.Concat(r[GravityLoadPath.Key(sb.Id, l2.Id)].Points).ToList();
             Assert.AreEqual(1, below.Count);
-            Assert.AreEqual(1500, below[0].Load.Dead, Tol);
+            Assert.AreEqual(1350, below[0].Load.Dead, 1e-6);
             Assert.IsTrue(below[0].From.StartsWith(bm.Id + " via "));
         }
 

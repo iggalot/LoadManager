@@ -81,15 +81,17 @@ namespace LoadManager.Tests
         /// A girder's reactions from its own free body, every load at its place (not half to each end). A 30 × 20 ft floor,
         /// joists S-N at 16 in., D 10 psf. A beam (y = 6, x 0 to 15) from the W wall into a girder (x = 15, y 0 to 20) on the
         /// S and N walls; a wall upstairs standing on the girder from y = 12 to 18 (10 ft at 10 psf: 100 plf).
-        /// The beam: 3 + 7 = 10 ft of floor, 100 plf over 15 ft, uniform: 750 lb at each end. The girder (y from its start):
+        /// The beam: 3 + 7 = 10 ft of floor, 100 plf, but not over its first 8 in.: the W wall takes its edge joist there (half
+        /// of 16 in., owner 2026-11-11). So 100 × 14.333 = 1433.33 lb with its resultant at 7.833 ft: 748.52 at the girder,
+        /// 684.86 at the wall. The girder (y from its start):
         /// <list type="bullet">
-        /// <item>the beam's 750 lb at 6 ft: 750 × 6 / 20 = 225 at its end, 525 at its start;</item>
+        /// <item>the beam's 748.52 lb at 6 ft: × 6 / 20 = 224.56 at its end, 523.96 at its start;</item>
         /// <item>the wall, 600 lb with its resultant at 15 ft: 600 × 15 / 20 = 450 at its end, 150 at its start;</item>
         /// <item>its strip of floor (8 in. each side where the walls would have it, not off the beam it carries): 1.333 ft
         /// wide from 0 to 3 (40 lb at 1.5), 0.667 ft from 3 to 13 (66.67 lb at 8), 1.333 ft from 13 to 20 (93.33 lb at
         /// 16.5): ΣM = 60 + 533.33 + 1540 = 2133.33 lb·ft, so 106.67 at its end and 93.33 at its start.</item>
         /// </list>
-        /// Start 525 + 150 + 93.33 = 768.33 lb; end 225 + 450 + 106.67 = 781.67 lb.
+        /// Start 523.96 + 150 + 93.33 = 767.29 lb; end 224.56 + 450 + 106.67 = 781.22 lb.
         /// </summary>
         [TestMethod]
         public void Girder_ReactionsFromItsFreeBody_EachLoadAtItsPlace()
@@ -103,17 +105,21 @@ namespace LoadManager.Tests
             s.Levels = new System.Collections.Generic.Dictionary<string, AreaLoad> { [l2.Id] = new AreaLoad { Dead = 10 } };
             var r = GravityLoadPath.Run(b, s);
 
-            Assert.AreEqual(750, r.Beams[beam.Id].StartReaction.Dead, Tol);
-            Assert.AreEqual(750, r.Beams[beam.Id].EndReaction.Dead, Tol);
+            // by hand to 0.1 lb (the strip's edge at 8 in. falls inside a quarter-foot sample); the girder then exactly from it
+            double q = 100 * (15 - 2.0 / 3), xc = (2.0 / 3 + 15) / 2;
+            Assert.AreEqual(q * (15 - xc) / 15, r.Beams[beam.Id].StartReaction.Dead, 0.1);
+            Assert.AreEqual(q * xc / 15, r.Beams[beam.Id].EndReaction.Dead, 0.1);
+            Assert.AreEqual(q, r.Beams[beam.Id].StartReaction.Dead + r.Beams[beam.Id].EndReaction.Dead, 1e-6);
+            double end = r.Beams[beam.Id].EndReaction.Dead;
             var g = r.Beams[girder.Id];
             Assert.AreEqual(6, g.Points.Single().At, Tol, "the beam lands 6 ft along the girder");
             Assert.AreEqual(600, g.Partials.Sum(p => p.Load.Dead * (p.B - p.A)), Tol, "the wall standing on it");
-            Assert.AreEqual(525 + 150 + 280.0 / 3, g.StartReaction.Dead, Tol);
-            Assert.AreEqual(225 + 450 + 320.0 / 3, g.EndReaction.Dead, Tol);
+            Assert.AreEqual(end * 14 / 20 + 150 + 280.0 / 3, g.StartReaction.Dead, 1e-6);
+            Assert.AreEqual(end * 6 / 20 + 450 + 320.0 / 3, g.EndReaction.Dead, 1e-6);
             // and its own free body: ΣF and ΣM about its start, by hand from the loads it holds
-            double total = 750 + 600 + 200, moment = 750 * 6 + 600 * 15 + 6400.0 / 3;
-            Assert.AreEqual(total, g.StartReaction.Dead + g.EndReaction.Dead, Tol);
-            Assert.AreEqual(moment, g.EndReaction.Dead * 20, Tol);
+            double total = end + 600 + 200, moment = end * 6 + 600 * 15 + 6400.0 / 3;
+            Assert.AreEqual(total, g.StartReaction.Dead + g.EndReaction.Dead, 1e-6);
+            Assert.AreEqual(moment, g.EndReaction.Dead * 20, 1e-6);
         }
 
         /// <summary>
