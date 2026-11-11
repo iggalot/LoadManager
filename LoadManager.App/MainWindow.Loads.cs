@@ -238,13 +238,16 @@ namespace LoadManager.App
         private void ModelErrorsSide()
         {
             var errors = GravityLoadPath.ModelErrorsOf(B);
+            // the issues button: the errors and the warnings, as in every app (owner 2026-11-11)
+            issuesButton.Sketch = sketch;
+            issuesButton.Show(errors.Concat(BuildingModel.Checks.ModelChecks.Run(B).Where(i => i.Severity != BuildingModel.Checks.Severity.Error)).ToList());
             sketch.Issues = errors;
             sketch.ShowIssues = errors.Count > 0;
             modelErrorBanner.Visibility = errors.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (errors.Count == 0) return;
             ((TextBlock)modelErrorBanner.Child).Text =
                 $"The building model has {errors.Count} error{(errors.Count == 1 ? "" : "s")}: nothing is calculated (no loads, no foundation) until " +
-                $"{(errors.Count == 1 ? "it is" : "they are")} fixed in the Building Model (Model > Edit building). Click an error in the side panel to see it on the plan.";
+                $"{(errors.Count == 1 ? "it is" : "they are")} fixed in the Building Model. Click an error (in the side panel, or the red issues button at the top right) to see it on the plan.";
             side.Children.Add(Para("The building model is not valid", bold: true));
             var list = new IssueList(sketch) { Margin = new Thickness(0, 0, 0, 12) };
             list.Show(errors);

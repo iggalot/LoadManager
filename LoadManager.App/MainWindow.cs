@@ -85,7 +85,7 @@ namespace LoadManager.App
                 return m;
             }
             var file = Item(menu, "_File", null, null);
-            Item(file, "_Open…", "Ctrl+O", OpenDialog, "A project's building model (.bldg.json)");
+            Item(file, "_Open project…", "Ctrl+O", OpenDialog, "A project's building model (.bldg.json)");
             Item(file, "_Save", "Ctrl+S", () => Save(), "Writes the loads into the project file (the building in it is left as it is)");
             Item(file, "_Reload the building", null, () => Reload(true), "Reads the building from the file again (another app has changed it); your load changes are kept");
             file.Items.Add(new Separator());
@@ -120,6 +120,10 @@ namespace LoadManager.App
             tab3D = Ui.Toggle("", "Foundation 3D", "The foundation loads in 3D", (s, e) => SetMode(Mode.Foundation3D));
             var tabs = new StackPanel { Orientation = Orientation.Horizontal };
             tabs.Children.Add(loadsTab); tabs.Children.Add(foundationTab); tabs.Children.Add(tab3D);
+            issuesButton.Picking += (s, i) => { if (mode == Mode.Foundation3D) SetMode(Mode.Loads); }; // the plan first
+            issuesButton.Picked += (s, i) => { UpdateLevelBar(); Say($"Shown on the plan: {string.Join(", ", i.Ids)} ({B.Level(i.LevelId)?.Name})."); };
+            DockPanel.SetDock(issuesButton, Dock.Right);
+            bar.Children.Add(issuesButton);
             DockPanel.SetDock(tabs, Dock.Right);
             bar.Children.Add(tabs);
             var appBar = new Border { Child = bar, Background = Brushes.White, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(6, 3, 6, 3) };
@@ -189,6 +193,7 @@ namespace LoadManager.App
                 bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
                 if (ctrl && e.Key == Key.S) { Save(); e.Handled = true; }
                 else if (ctrl && e.Key == Key.O) { OpenDialog(); e.Handled = true; }
+                else if (ctrl && e.Key == Key.Z && (Keyboard.Modifiers & ModifierKeys.Shift) != 0) { Redo(); e.Handled = true; } // Ctrl+Shift+Z redoes, as in every app
                 else if (ctrl && e.Key == Key.Z) { Undo(); e.Handled = true; }
                 else if (ctrl && e.Key == Key.Y) { Redo(); e.Handled = true; }
                 else if (e.Key == Key.Escape) { CancelZone(); Select(null, -1, null); e.Handled = true; }
@@ -389,6 +394,9 @@ namespace LoadManager.App
         };
 
         /// <summary>The building model has errors: nothing is calculated (its text set by ModelErrorsSide).</summary>
+        /// <summary>The suite's issues button, at the right of the top bar: the building model's errors and warnings.</summary>
+        private readonly IssuesButton issuesButton = new IssuesButton();
+
         private readonly Border modelErrorBanner = new Border
         {
             Background = new SolidColorBrush(Color.FromRgb(0xC6, 0x28, 0x28)), Padding = new Thickness(10, 5, 10, 5), Visibility = Visibility.Collapsed,
@@ -480,7 +488,7 @@ namespace LoadManager.App
             RefreshFreeBody();
             Title3D();
             sketch.Select(sketch.Selection.ToList()); // what is still there stays selected (an undo may have taken a zone or a wall)
-            Title = $"{(string.IsNullOrEmpty(path) ? "No project" : Path.GetFileName(path))}{(Dirty ? " *" : "")}{(viewOnly ? " (view only)" : "")} — Load Manager";
+            Title = $"{(string.IsNullOrEmpty(path) ? "No project" : Path.GetFileName(path).Replace(BuildingModel.Diagnostics.ProjectFolder.ModelExtension, ""))}{(Dirty ? " *" : "")}{(viewOnly ? " (view only)" : "")} - Load Manager";
             UpdateLevelBar();
             RefreshSide();
             diagram.Highlight = selectedPoint;
@@ -533,17 +541,17 @@ namespace LoadManager.App
         private void UpdateLevelBar()
         {
             levelBar.Children.Clear();
-            levelBar.Children.Add(new TextBlock { Text = "Level:", Foreground = Ui.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+            levelBar.Children.Add(new TextBlock { Text = "Level", Foreground = Ui.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
             var roof = B.RoofLevel();
             var lowest = B.LevelsBottomUp.FirstOrDefault();
             bool fdn = mode == Mode.Foundation;
-            foreach (var l in B.LevelsBottomUp.Where(l => l.Elevation > 0 || (fdn && l == lowest)).OrderByDescending(l => l.Elevation))
+            foreach (var l in B.LevelsBottomUp.Where(l => l.Elevation > 0 || (fdn && l == lowest))) // bottom up, as in the Building Model
             {
                 var id = l.Id;
                 string tip = fdn
                     ? (l == lowest ? "The foundation: the footings' loads and the hold-downs on it" : $"{l.Name}'s {(l == roof ? "roof" : "floor")}: click its diaphragm for its free body in the wind, the hold-downs on it")
                     : $"The loads on {l.Name}'s {(l == roof ? "roof" : "floor")} ({l.Elevation:0.##} ft) and the walls under it";
-                var t = Ui.Toggle("", fdn && l == lowest ? "Foundation" : l.Name + (l == roof ? " (roof)" : ""), tip, (s, e) => sketch.ShowLevel(id));
+                var t = Ui.Toggle("", fdn && l == lowest ? "Foundation" : l.Name + (l == roof && l.Name.IndexOf("roof", StringComparison.OrdinalIgnoreCase) < 0 ? " (roof)" : ""), tip, (s, e) => sketch.ShowLevel(id));
                 t.IsChecked = sketch.ActiveLevel?.Id == id;
                 levelBar.Children.Add(t);
             }
