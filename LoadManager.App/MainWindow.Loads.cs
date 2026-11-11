@@ -351,6 +351,12 @@ namespace LoadManager.App
             var areas = FramingAreas.On(B, lv).ToList();
             side.Children.Add(Head($"Framing areas on {lv.Name} ({areas.Count})"));
             if (areas.Count == 0) { side.Children.Add(Para("No floor or roof is drawn on this level.", true)); return; }
+            if ((s.Uses?.Count ?? 0) == 0 && (s.AreaUses?.Count ?? 0) == 0 && areas.All(a => string.IsNullOrWhiteSpace(a.Name)) && selectedAreas.Count == 0)
+            {
+                // nothing given a use yet: one line, not a list of areas all with the level's loads
+                side.Children.Add(Para($"{(areas.Count == 1 ? "Its one area takes" : $"All {areas.Count} take")} the level's loads. A hallway, a balcony: enter its use in Floor and roof loads, then name the areas in the Building Model or click them here.", true));
+                return;
+            }
             side.Children.Add(Para("Each framing area takes the loads of its use: the one picked here, else the use its name gives (an area named Hallway takes the Hallway use), else the level's. " +
                                    "Click an area on the plan (Shift+click for several) to pick its use; the uses are entered in Floor and roof loads. A load zone still wins inside it.", true));
             var counts = areas.GroupBy(a => s.UseOf(a)?.Name ?? "the level's loads").OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}");
