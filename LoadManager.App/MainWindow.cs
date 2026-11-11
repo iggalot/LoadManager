@@ -87,12 +87,15 @@ namespace LoadManager.App
             var file = Item(menu, "_File", null, null);
             Item(file, "_Open project…", "Ctrl+O", OpenDialog, "A project's building model (.bldg.json)");
             Item(file, "_Save", "Ctrl+S", () => Save(), "Writes the loads into the project file (the building in it is left as it is)");
-            Item(file, "_Reload the building", null, () => Reload(true), "Reads the building from the file again (another app has changed it); your load changes are kept");
             file.Items.Add(new Separator());
             Item(file, "E_xit", "Alt+F4", Close);
             var edit = Item(menu, "_Edit", null, null);
             Item(edit, "_Undo", "Ctrl+Z", Undo);
             Item(edit, "_Redo", "Ctrl+Y", Redo);
+            // every app: File, Edit, its own menus (Building first), View, Help (owner 2026-11-11)
+            var building = Item(menu, "_Building", null, null);
+            Item(building, "_Edit building…", null, EditBuilding, "Saves the loads and opens the project in the Building Model, the one place the building is drawn; this window waits and reads the building again when it closes");
+            Item(building, "_Reload the building", null, () => Reload(true), "Reads the building from the file again (another app has changed it); your load changes are kept");
             var loads = Item(menu, "_Loads", null, null);
             Item(loads, "_Floor and roof loads…", null, AreaLoads, "Each level's area loads (D, L, Lr, S psf), the load zones and the walls' own weight");
             Item(loads, "Draw a load _zone", "R", () => StartZone(), "Drag a rectangle on the plan: an area with its own loads on this level");
@@ -101,8 +104,8 @@ namespace LoadManager.App
             Item(loads, "Foundation loads (service)…", null, () => new Wpf.FoundationLoadsWindow(B) { Owner = this }.Show(), "What reaches the foundation, by kind of load, unfactored");
             Item(loads, "Foundation loads (_combined)…", null, () => ShowCombined(null), "Every combination with its load factors, each wall and point, and the envelope");
             var view = Item(menu, "_View", null, null);
-            Item(view, "_Loads plan", null, () => SetMode(Mode.Loads));
-            Item(view, "_Foundation plan", null, () => SetMode(Mode.Foundation));
+            Item(view, "_Loads", null, () => SetMode(Mode.Loads));
+            Item(view, "_Foundation", null, () => SetMode(Mode.Foundation));
             Item(view, "Foundation _3D", null, () => SetMode(Mode.Foundation3D));
             view.Items.Add(new Separator());
             Item(view, "_Zoom to the drawing", "Z", () => sketch.ZoomExtents());
@@ -111,6 +114,7 @@ namespace LoadManager.App
             // one setting for the plans and the free bodies
             internalForces.Click += (s, e) => { Title3D(); RefreshSide(); if (view3D.Visibility == Visibility.Visible) view3D.Show(B); };
             view.Items.Add(internalForces);
+            menu.Items.Add(HelpMenu.For(this, "Load Manager", "Gravity loads: ASCE 7 (live loads IBC Table 1607.1); the wind uplift from the Wind Load Calculator's cases.\nThe foundation: the gravity loads combined with the shear walls' hold-down forces."));
 
             var bar = new DockPanel { LastChildFill = false };
             bar.Children.Add(new TextBlock { Text = "Load Manager", FontWeight = FontWeights.SemiBold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 12, 0) });
@@ -132,6 +136,24 @@ namespace LoadManager.App
             diagramBox = new Border { Child = diagram, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 1, 0, 0), Visibility = Visibility.Collapsed };
             // the plan's bottom bar, as in every view: VIEW, zoom to all, the mouse hint
             var planBar = Ui.ViewBar(sketch.ZoomExtents, Ui.PlanHint);
+            // and the plan's toggles, named as in every plan (owner 2026-11-11): Grid, Issues, and this app's overlay, Top loads
+            // (no Snap or Ortho: nothing is drawn here)
+            if (planBar.Child is DockPanel pd && pd.Children.Count > 0 && pd.Children[0] is StackPanel tools)
+            {
+                ToggleButton grid = null;
+                grid = Ui.Toggle("", "Grid", "The grid: 1 ft lines, heavier every 10 ft, labelled in feet along the edges", (s, e) => { sketch.ShowGrid = grid.IsChecked == true; sketch.Refresh(); });
+                grid.IsChecked = sketch.ShowGrid;
+                issuesToggle = Ui.Toggle("", "Issues", "Show the building model's issues on the plan (circle: error, triangle: warning); on by itself with an error. Click a marker to select what it is about.",
+                                         (s, e) => { sketch.ShowIssues = issuesToggle.IsChecked == true; sketch.Refresh(); });
+                ToggleButton loadsToggle = null;
+                loadsToggle = Ui.Toggle("", "Top loads", "Each wall's top load written along it on the Loads plan (D, L, Lr, S plf)", (s, e) => { showWallLoads = loadsToggle.IsChecked == true; sketch.Refresh(); });
+                loadsToggle.IsChecked = showWallLoads;
+                tools.Children.Add(grid);
+                tools.Children.Add(Ui.Separator());
+                tools.Children.Add(issuesToggle);
+                tools.Children.Add(loadsToggle);
+                tools.Children.Add(Ui.Separator());
+            }
             var plan = new DockPanel();
             DockPanel.SetDock(levelBox, Dock.Top);
             DockPanel.SetDock(planBar, Dock.Bottom);
@@ -209,7 +231,7 @@ namespace LoadManager.App
             ResetHistory();
             SetMode(Mode.Loads);
             Changed();
-            Say("Open a project's building model (File > Open). The building is drawn in the Building Model app; the loads are edited here.");
+            Say("Open a project's building model (File > Open project). The building is drawn in the Building Model app; the loads are edited here.");
         }
 
         // ------------------------------------------------------------------ files
@@ -237,6 +259,16 @@ namespace LoadManager.App
                 case "foundation3d": SetMode(Mode.Foundation3D); break;
                 default: Log.Warning("App", "No such page: " + page + " (loads, foundation or foundation3d)", null); break;
             }
+        }
+
+        /// <summary>A member selected and in view on its level (the hub's <c>--select</c>, as in every app); the plan, not the 3D.</summary>
+        public void SelectMember(string id)
+        {
+            if (B?.Find(id) == null) { Log.Warning("App", "Nothing to select: " + id, null); return; }
+            if (mode == Mode.Foundation3D) SetMode(Mode.Loads);
+            sketch.SelectAndShow(id);
+            UpdateLevelBar();
+            Say("Shown on the plan: " + id + ".");
         }
 
         public void Open(string file)
@@ -281,13 +313,57 @@ namespace LoadManager.App
             }
         }
 
+        private System.Diagnostics.Process editor;
+
+        /// <summary>The Building Model, next to this program (copied there by the build).</summary>
+        private static string EditorPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "BuildingModel.exe");
+
+        /// <summary>
+        /// Edit building (as in every app, owner 2026-11-11): saves the loads and opens the project in the Building Model, the one
+        /// place the building is drawn. This window waits while it is open and reads the building again when it closes (and each
+        /// time it saves: the file is watched).
+        /// </summary>
+        private void EditBuilding()
+        {
+            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open project)."); return; }
+            if (viewOnly) { Say(ViewOnlyMessage); return; }
+            if (editor != null && !editor.HasExited) return;
+            if (!File.Exists(EditorPath))
+            {
+                MessageBox.Show(this, "The Building Model (BuildingModel.exe) is not next to this program:\n" + EditorPath, "Edit building", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            if (Dirty && !Save()) return;
+            try
+            {
+                editor = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(EditorPath, "\"" + path + "\"") { UseShellExecute = false });
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception || ex is InvalidOperationException)
+            {
+                Log.Error("App", "Could not start the Building Model", ex);
+                MessageBox.Show(this, "The Building Model could not be started:\n" + ex.Message, "Edit building", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            Log.Info("App", "Building Model opened on " + path);
+            var root = (UIElement)Content;
+            root.IsEnabled = false;
+            Say("The building is open in the Building Model. Edit and save it there, then close it: this window reads the building again.");
+            editor.EnableRaisingEvents = true;
+            editor.Exited += (s, a) => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                editor = null;
+                root.IsEnabled = true;
+                Reload(false);
+            }));
+        }
+
         /// <summary>
         /// Saves the loads: the file is read again (another app may have saved the building since), only its "Loads" section is
         /// replaced with these, and it is written back (its revision goes up, as for any save).
         /// </summary>
         private bool Save()
         {
-            if (string.IsNullOrEmpty(path)) { MessageBox.Show(this, "Open a project first (File > Open).", "Save"); return false; }
+            if (string.IsNullOrEmpty(path)) { MessageBox.Show(this, "Open a project first (File > Open project).", "Save"); return false; }
             if (viewOnly)
             {
                 MessageBox.Show(this, "View only: someone else is working on this project, so the loads are not saved from here.", "Save", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -396,6 +472,8 @@ namespace LoadManager.App
         /// <summary>The building model has errors: nothing is calculated (its text set by ModelErrorsSide).</summary>
         /// <summary>The suite's issues button, at the right of the top bar: the building model's errors and warnings.</summary>
         private readonly IssuesButton issuesButton = new IssuesButton();
+        /// <summary>The plan bar's Issues toggle (the markers on the plan).</summary>
+        private ToggleButton issuesToggle;
 
         private readonly Border modelErrorBanner = new Border
         {
@@ -428,7 +506,7 @@ namespace LoadManager.App
         /// <summary>One edit of the loads (an undo step, named <paramref name="what"/>), made by <paramref name="change"/> on the building's data. False: nothing changed.</summary>
         private bool Edit(string what, Action<Building> change)
         {
-            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return false; }
+            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open project)."); return false; }
             change(B);
             if (viewOnly)
             {
@@ -541,7 +619,7 @@ namespace LoadManager.App
         private void UpdateLevelBar()
         {
             levelBar.Children.Clear();
-            levelBar.Children.Add(new TextBlock { Text = "Level", Foreground = Ui.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+            levelBar.Children.Add(new TextBlock { Text = "LEVEL", Foreground = Ui.Muted, FontSize = 10.5, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
             var roof = B.RoofLevel();
             var lowest = B.LevelsBottomUp.FirstOrDefault();
             bool fdn = mode == Mode.Foundation;
@@ -551,7 +629,10 @@ namespace LoadManager.App
                 string tip = fdn
                     ? (l == lowest ? "The foundation: the footings' loads and the hold-downs on it" : $"{l.Name}'s {(l == roof ? "roof" : "floor")}: click its diaphragm for its free body in the wind, the hold-downs on it")
                     : $"The loads on {l.Name}'s {(l == roof ? "roof" : "floor")} ({l.Elevation:0.##} ft) and the walls under it";
-                var t = Ui.Toggle("", fdn && l == lowest ? "Foundation" : l.Name + (l == roof && l.Name.IndexOf("roof", StringComparison.OrdinalIgnoreCase) < 0 ? " (roof)" : ""), tip, (s, e) => sketch.ShowLevel(id));
+                // G 2 R, as in every app (owner 2026-11-11); the full name in the tooltip
+                var t = Ui.Toggle("", l.Short, tip, (s, e) => sketch.ShowLevel(id));
+                t.MinWidth = 28;
+                System.Windows.Automation.AutomationProperties.SetName(t, fdn && l == lowest ? "Foundation" : l.Name);
                 t.IsChecked = sketch.ActiveLevel?.Id == id;
                 levelBar.Children.Add(t);
             }

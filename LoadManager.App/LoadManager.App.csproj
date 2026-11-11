@@ -20,6 +20,8 @@
     <ProjectReference Include="..\LoadManager.Wpf\LoadManager.Wpf.csproj" />
     <ProjectReference Include="..\..\BuildingModel\BuildingModel.Core\BuildingModel.Core.csproj" />
     <ProjectReference Include="..\..\BuildingModel\BuildingModel.Sketch\BuildingModel.Sketch.csproj" />
+    <!-- the Building Model: referenced so BuildingModel.exe is copied next to this program (Building > Edit building) -->
+    <ProjectReference Include="..\..\BuildingModel\BuildingModel.App\BuildingModel.App.csproj" />
     <!-- the shared wood framing in 3D: a wall's free body drawn framed -->
     <ProjectReference Include="..\..\WoodFraming\WoodFraming.Wpf\WoodFraming.Wpf.csproj" />
     <ProjectReference Include="..\..\ASCE7-Wind-Load-Calculator\ASCE7Wind.Core\ASCE7Wind.Core.csproj" />

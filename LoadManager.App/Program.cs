@@ -30,7 +30,15 @@ namespace LoadManager.App
                 // the hub's "--page foundation": the step's page, once the project is open
                 int at = Array.FindIndex(args, a => string.Equals(a, "--page", StringComparison.OrdinalIgnoreCase));
                 string page = at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
-                if (File.Exists(args[0])) w.Loaded += (s, e) => { w.Open(args[0]); if (page != null && w.HasProject) w.ShowPage(page); };
+                // and "--select W4": the member, selected and in view (as in every app: the hub's "Show W4")
+                int sel = Array.FindIndex(args, a => string.Equals(a, "--select", StringComparison.OrdinalIgnoreCase));
+                string select = sel >= 0 && sel + 1 < args.Length ? args[sel + 1] : null;
+                if (File.Exists(args[0])) w.Loaded += (s, e) =>
+                {
+                    w.Open(args[0]);
+                    if (page != null && w.HasProject) w.ShowPage(page);
+                    if (select != null && w.HasProject) w.Dispatcher.BeginInvoke(new Action(() => w.SelectMember(select)), System.Windows.Threading.DispatcherPriority.Loaded);
+                };
                 else Log.Warning("App", "The file to open does not exist: " + args[0], null);
             }
             return app.Run(w);

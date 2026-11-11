@@ -162,7 +162,7 @@ namespace LoadManager.App
 
         private void StartZone()
         {
-            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return; }
+            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open project)."); return; }
             if (viewOnly) { Say(ViewOnlyMessage); return; }
             if (mode != Mode.Loads) SetMode(Mode.Loads);
             drawingZone = true;
@@ -198,7 +198,7 @@ namespace LoadManager.App
 
         private void AreaLoads()
         {
-            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open)."); return; }
+            if (string.IsNullOrEmpty(path)) { Say("Open a project first (File > Open project)."); return; }
             var w = new Wpf.AreaLoadsWindow(B, readOnly: viewOnly) { Owner = this };
             if (w.ShowDialog() != true) return;
             var levels = w.Levels;
@@ -240,9 +240,12 @@ namespace LoadManager.App
             var errors = GravityLoadPath.ModelErrorsOf(B);
             // the issues button: the errors and the warnings, as in every app (owner 2026-11-11)
             issuesButton.Sketch = sketch;
-            issuesButton.Show(errors.Concat(BuildingModel.Checks.ModelChecks.Run(B).Where(i => i.Severity != BuildingModel.Checks.Severity.Error)).ToList());
-            sketch.Issues = errors;
-            sketch.ShowIssues = errors.Count > 0;
+            var all = errors.Concat(BuildingModel.Checks.ModelChecks.Run(B).Where(i => i.Severity != BuildingModel.Checks.Severity.Error)).ToList();
+            issuesButton.Show(all);
+            // on the plan: the plan bar's Issues toggle, as in every plan; on by itself with an error (nothing is calculated)
+            sketch.Issues = all;
+            if (errors.Count > 0 && issuesToggle != null) issuesToggle.IsChecked = true;
+            sketch.ShowIssues = issuesToggle?.IsChecked == true;
             modelErrorBanner.Visibility = errors.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (errors.Count == 0) return;
             ((TextBlock)modelErrorBanner.Child).Text =
@@ -302,9 +305,7 @@ namespace LoadManager.App
                 side.Children.Add(Head("Walls"));
                 side.Children.Add(Para("Click a wall to see what it carries, where it comes from, and to enter its top load by hand. Shift+click or drag a window to pick several: one top load for all.", true));
             }
-            var cb = new CheckBox { Content = "Show each wall's top load on the plan", IsChecked = showWallLoads, Margin = new Thickness(0, 10, 0, 0) };
-            cb.Click += (o, e) => { showWallLoads = cb.IsChecked == true; sketch.Refresh(); };
-            side.Children.Add(cb);
+            // each wall's top load on the plan: the plan bar's "Top loads" toggle, as every plan overlay is a bar button
             if (loadPath != null && loadPath.Notes.Count > 0)
             {
                 side.Children.Add(Head("Load path notes"));
