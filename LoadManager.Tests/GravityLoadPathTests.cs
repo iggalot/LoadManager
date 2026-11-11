@@ -484,6 +484,29 @@ namespace LoadManager.Tests
             Assert.IsFalse(LoadSection.SetAreaUse(b, placed, null), "nothing changed");
         }
 
+        /// <summary>
+        /// A hallway named apart for its loads, framed the same way as the floor round it (owner 2026-11-11): the joists run
+        /// through it, S wall to the interior wall (12 ft), and its use loads its part of their span. L 40, the hallway's 100 from
+        /// y 4 to 8: the S wall 0 to 6 (4 × 40 + 2 × 100 = 360), the interior wall 6 to 16 (2 × 100 + 8 × 40 = 520), the N wall 160.
+        /// </summary>
+        [TestMethod]
+        public void AreaUse_AHallwayFramedTheSameWay_TheJoistsRunThrough()
+        {
+            var b = OneStory(out var l2, out var s, out var i, out var n, out _);
+            LoadSection.SetLevel(b, l2.Id, new AreaLoad { Dead = 15, Live = 40 });
+            var d = b.Diaphragms.Single();
+            var hall = FramingAreas.Place(b, d, new Rect2(0, 4, 30, 8), SpanDirection.SouthNorth);
+            Assert.AreEqual(1, hall.Count);
+            Assert.IsTrue(d.Framing.Count > 1 && d.Framing.All(a => a.Span == SpanDirection.SouthNorth));
+            FramingAreas.SetName(b, hall, "Hallway");
+            LoadSection.SetUses(b, new[] { new AreaUse { Name = "Hallway", Load = new AreaLoad { Dead = 15, Live = 100 } } });
+            Assert.AreEqual(0, GravityLoadPath.ModelErrorsOf(b).Count, "no joist ends at the hallway's edges");
+            var r = GravityLoadPath.Run(b, LoadSection.Read(b));
+            Assert.AreEqual(360, r[GravityLoadPath.Key(s.Id, l2.Id)].Load.Live, Tol);
+            Assert.AreEqual(520, r[GravityLoadPath.Key(i.Id, l2.Id)].Load.Live, Tol);
+            Assert.AreEqual(160, r[GravityLoadPath.Key(n.Id, l2.Id)].Load.Live, Tol);
+        }
+
         [TestMethod]
         public void Zone_PartOfTheStrip()
         {

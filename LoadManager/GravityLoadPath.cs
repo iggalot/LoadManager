@@ -392,8 +392,8 @@ namespace LoadManager
                 }
                 // every bearing line's share of the floor or roof, beams and walls (used in (b) and (c))
                 // each framing area its use's loads (a balcony, a corridor), else the level's; a zone over it still wins (owner 2026-11-10)
-                AreaLoad AreaOf(Plate pl) => pl.Area == null ? area : s.LoadOn(pl.Area, lv.Id) ?? new AreaLoad();
-                var shares = Tributaries(lines.Where(l => l.Dir != WallDirection.NotOrthogonal).ToList(), plates, AreaOf, zones, Most, Carries);
+                AreaLoad UseOf(FramingArea fa) => s.UseOf(fa)?.Load;
+                var shares = Tributaries(lines.Where(l => l.Dir != WallDirection.NotOrthogonal).ToList(), plates, area, UseOf, zones, Most, Carries);
                 var fixedPoints = new Dictionary<string, List<ConcentratedLoad>>();
                 foreach (var m in order)
                 {
@@ -720,9 +720,13 @@ namespace LoadManager
             public double Overhang;
             /// <summary>Its joists' or rafters' spacing (ft): a beam running along them carries half of it each side.</summary>
             public double Spacing;
+            /// <summary>
+            /// The framing areas it is made of, each with its rectangle here (eaves and all): those running the same way on one
+            /// diaphragm, its joists running through from one to the next (owner 2026-11-11); each loaded by its use, else the
+            /// level's. Null: a sloped roof, framed across its ridge.
+            /// </summary>
+            public List<(FramingArea a, Rect2 r)> Areas;
             /// <summary>The wind on it (the roof, in the uplift pass), else null.</summary>
-            /// <summary>The framing area it is (null: a sloped roof, framed across its ridge): its use's loads, else the level's.</summary>
-            public FramingArea Area;
             public RoofWindCase Wind;
         }
 
@@ -741,20 +745,27 @@ namespace LoadManager
                 list.Add(new Plate { Region = Region.Of(new[] { Grow(plan) }), Span = span, Overhang = o, Wind = wind, Spacing = (b.Defaults?.RafterSpacing ?? 0) / 12 });
                 return list;
             }
-            // one plate per framing area (owner 2026-11-10): its joists run its way and end at its edges, so what lands on it goes to
-            // the walls and beams under it; a flat roof's eaves grow the areas' sides on the diaphragm's outline only
+            // one plate per way the framing runs on a diaphragm (owner 2026-11-10/11): its joists run that way through every area
+            // framed so and end where the framing turns, so what lands on it goes to the walls and beams under it; a flat roof's
+            // eaves grow the areas' sides on the diaphragm's outline only
             var holes = b.OpeningsCutting(lv).SelectMany(x => x.Pieces).ToList();
             foreach (var d in b.Diaphragms.Where(d => d.LevelId == lv.Id && d.Pieces != null && d.Pieces.Count > 0))
             {
                 var whole = Region.Of(d.Pieces);
                 bool Out(double x, double y) => !whole.Contains(x, y, 0);
-                foreach (var a in d.Framing ?? new List<FramingArea>())
+                // the areas running the same way are one plate: its joists run through from one to the next (owner 2026-11-11)
+                foreach (var run in (d.Framing ?? new List<FramingArea>()).GroupBy(a => a.Span))
                 {
-                    var r = a.Rect;
-                    double mx = (r.X0 + r.X1) / 2, my = (r.Y0 + r.Y1) / 2, e = 1e-3;
-                    var grown = o <= 0 ? r : new Rect2(Out(r.X0 - e, my) ? r.X0 - o : r.X0, Out(mx, r.Y0 - e) ? r.Y0 - o : r.Y0,
-                                                       Out(r.X1 + e, my) ? r.X1 + o : r.X1, Out(mx, r.Y1 + e) ? r.Y1 + o : r.Y1);
-                    list.Add(new Plate { Region = Region.Of(new[] { grown }).Minus(holes), Span = a.Span, Overhang = o, Wind = isRoof ? wind : null, Area = a,
+                    var rects = new List<(FramingArea a, Rect2 r)>();
+                    foreach (var a in run)
+                    {
+                        var r = a.Rect;
+                        double mx = (r.X0 + r.X1) / 2, my = (r.Y0 + r.Y1) / 2, e = 1e-3;
+                        var grown = o <= 0 ? r : new Rect2(Out(r.X0 - e, my) ? r.X0 - o : r.X0, Out(mx, r.Y0 - e) ? r.Y0 - o : r.Y0,
+                                                           Out(r.X1 + e, my) ? r.X1 + o : r.X1, Out(mx, r.Y1 + e) ? r.Y1 + o : r.Y1);
+                        rects.Add((a, grown));
+                    }
+                    list.Add(new Plate { Region = Region.Of(rects.Select(x => x.r)).Minus(holes), Span = run.Key, Overhang = o, Wind = isRoof ? wind : null, Areas = rects,
                                          Spacing = (isRoof ? b.Defaults?.RafterSpacing ?? 0 : b.Defaults?.FloorJoistSpacing ?? 0) / 12 });
                 }
             }
@@ -771,18 +782,20 @@ namespace LoadManager
         /// carries (<paramref name="carries"/>): a girder takes nothing off the beams framing into it (owner 2026-11-10).
         /// </remarks>
         private static Dictionary<Line, (double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile)> Tributaries(
-            List<Line> lines, List<Plate> plates, Func<Plate, AreaLoad> areaOf, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, Func<Line, Line, bool> carries)
+            List<Line> lines, List<Plate> plates, AreaLoad area, Func<FramingArea, AreaLoad> useOf, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, Func<Line, Line, bool> carries)
         {
             var per = lines.ToDictionary(l => l, l => new List<(Plate p, double lo, double hi, double edge, LineLoad load, List<string> zones, double span, LoadProfile profile, LoadProfile widths)>());
             var taken = new Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>>();
             var takenZones = new Dictionary<(Line, Plate), List<string>>();
+            // each framing area of a plate loaded by its use (a part of the span, as a zone is), the rest by the level's
             foreach (var p in plates)
             {
                 var strips = AlongStrips(p, lines);
+                var parts = (p.Areas ?? new List<(FramingArea a, Rect2 r)>()).Select(x => (x.r, q: useOf(x.a))).Where(x => x.q != null).ToList();
                 foreach (var x in strips) { taken[(x.m, p)] = new List<(double, double, double, PointLoad)>(); takenZones[(x.m, p)] = new List<string>(); }
                 foreach (var w in lines.Where(w => Across(w, p)))
                 {
-                    var (lo, hi, edge, load, z, span) = Tributary(w, p, lines, strips, carries, taken, takenZones, areaOf(p), zones, pick, out var one, out var wide);
+                    var (lo, hi, edge, load, z, span) = Tributary(w, p, lines, strips, carries, taken, takenZones, area, parts, zones, pick, out var one, out var wide);
                     per[w].Add((p, lo, hi, edge, load, z, span, one, wide));
                 }
             }
@@ -835,23 +848,29 @@ namespace LoadManager
 
         /// <summary>
         /// The line load from a strip across the span (from <paramref name="f"/> to <paramref name="g"/>) at <paramref name="s"/>
-        /// along the line: the level's area loads, a zone's where it covers (the larger of each kind where zones overlap).
+        /// along the line: the level's area loads, a framing area's use where it has one (<paramref name="parts"/>), a zone's
+        /// where it covers (the larger of each kind where zones overlap; a zone wins over a use).
         /// </summary>
-        private static LineLoad Strip(bool alongX, double s, double f, double g, AreaLoad area, List<LoadZone> zones, List<string> met)
+        private static LineLoad Strip(bool alongX, double s, double f, double g, AreaLoad area, List<(Rect2 r, AreaLoad q)> parts, List<LoadZone> zones, List<string> met)
         {
             var here = zones.Where(z => alongX ? z.Y0 + Tol < s && s < z.Y1 - Tol : z.X0 + Tol < s && s < z.X1 - Tol)          // inside it, not only touching its edge
                             .Select(z => (z, a: alongX ? z.X0 : z.Y0, b: alongX ? z.X1 : z.Y1))
                             .Where(x => x.b > f + Tol && x.a < g - Tol).ToList();
-            if (here.Count == 0) return area.Times(g - f);
+            // the framing areas with a use across this strip (a hallway in a run of joists): their loads in their part of it
+            var uses = (parts ?? new List<(Rect2 r, AreaLoad q)>()).Where(x => alongX ? x.r.Y0 - Tol <= s && s <= x.r.Y1 + Tol : x.r.X0 - Tol <= s && s <= x.r.X1 + Tol)
+                            .Select(x => (x.q, a: alongX ? x.r.X0 : x.r.Y0, b: alongX ? x.r.X1 : x.r.Y1))
+                            .Where(x => x.b > f + Tol && x.a < g - Tol).ToList();
+            if (here.Count == 0 && uses.Count == 0) return area.Times(g - f);
             var cuts = new List<double> { f, g };
             foreach (var x in here) { if (x.a > f && x.a < g) cuts.Add(x.a); if (x.b > f && x.b < g) cuts.Add(x.b); }
+            foreach (var x in uses) { if (x.a > f && x.a < g) cuts.Add(x.a); if (x.b > f && x.b < g) cuts.Add(x.b); }
             cuts = cuts.Distinct().OrderBy(c => c).ToList();
             var sum = new LineLoad();
             for (int k = 0; k + 1 < cuts.Count; k++)
             {
                 double m = (cuts[k] + cuts[k + 1]) / 2, len = cuts[k + 1] - cuts[k];
                 var cover = here.Where(x => x.a <= m && m <= x.b).ToList();
-                AreaLoad q = area;
+                AreaLoad q = uses.Where(x => x.a <= m && m <= x.b).Select(x => x.q).FirstOrDefault() ?? area;
                 if (cover.Count > 0)
                 {
                     q = new AreaLoad { Dead = cover.Max(x => x.z.Load.Dead), Live = cover.Max(x => x.z.Load.Live), RoofLive = cover.Max(x => x.z.Load.RoofLive), Snow = cover.Max(x => x.z.Load.Snow) };
@@ -869,7 +888,7 @@ namespace LoadManager
         private static (double lo, double hi, double edge, LineLoad load, List<string> zones, double span) Tributary(Line w, Plate p, List<Line> all,
             List<(Line m, double c, double h, double a, double b)> strips, Func<Line, Line, bool> carries,
             Dictionary<(Line, Plate), List<(double fa, double ga, double ov, PointLoad total)>> taken, Dictionary<(Line, Plate), List<string>> takenZones,
-            AreaLoad area, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile, out LoadProfile widths)
+            AreaLoad area, List<(Rect2 r, AreaLoad q)> parts, List<LoadZone> zones, Func<LineLoad, LineLoad, LineLoad> pick, out LoadProfile profile, out LoadProfile widths)
         {
             profile = new LoadProfile();
             widths = new LoadProfile();
@@ -920,7 +939,7 @@ namespace LoadManager
                 double t = Math.Max(0, left) + Math.Max(0, right);
                 lo = Math.Min(lo, t); hi = Math.Max(hi, t);
                 double f = c0 - Math.Max(0, left), g = c0 + Math.Max(0, right);
-                var strip = Strip(alongX, s, f, g, area, zones, met);
+                var strip = Strip(alongX, s, f, g, area, parts, zones, met);
                 if (p.Wind != null) strip.Wind += WindAcross(p.Wind, alongX, s, f, g);
                 double st = alongX ? w.Start.Y : w.Start.X, half = (s1 - s0) / n / 2;
                 // less the strips the beams along the framing take (each counted once, on the beam): the share of this
@@ -931,7 +950,7 @@ namespace LoadManager
                     double ov = Math.Min(s + half, ts.c + ts.h) - Math.Max(s - half, ts.c - ts.h);
                     double fa = Math.Max(f, ts.a), ga = Math.Min(g, ts.b);
                     if (ov <= 1e-9 || ga - fa <= 1e-9) continue;
-                    var off = Strip(alongX, s, fa, ga, area, zones, takenZones[(ts.m, p)]);
+                    var off = Strip(alongX, s, fa, ga, area, parts, zones, takenZones[(ts.m, p)]);
                     if (p.Wind != null) off.Wind += WindAcross(p.Wind, alongX, s, fa, ga);
                     strip = Less(strip, off, Math.Min(1, ov / (2 * half)));
                     taken[(ts.m, p)].Add((fa, ga, ov, off.Over(ov)));
